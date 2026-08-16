@@ -288,9 +288,13 @@ export function createPlayer({ rider = 'skate', direction = 1 } = {}) {
     const fps = FPS[p.animSaut] || 16;
     const iPop = Math.floor(p.tempsAnim * fps);
     if (iPop < ph.pop.length) return ph.pop[iPop];
-    // Le pop est joué, on boucle sur les frames aériennes jusqu'au contact.
-    const iAir = iPop - ph.pop.length;
-    return ph.air[iAir % ph.air.length];
+    // §5 : animation « non-loop ». Le pop puis les frames aériennes se jouent
+    // une fois, linéairement, puis le rider reste posé sur la dernière pose
+    // aérienne jusqu'au contact — un modulo ici ferait battre les bras en
+    // boucle pendant tout le vol (repéré à l'œil : ça ressemblait à un
+    // tremblement, pas à un saut qui monte puis plane).
+    const iAir = Math.min(iPop - ph.pop.length, ph.air.length - 1);
+    return ph.air[iAir];
   }
 
   function indexCrash() {

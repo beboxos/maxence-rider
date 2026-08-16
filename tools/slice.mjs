@@ -479,6 +479,35 @@ for (const sheet of SHEETS) {
   }
 }
 
+// ─── Retouches ponctuelles ─────────────────────────────────────────────────────
+// Certaines frames découpées automatiquement contiennent plusieurs objets que
+// la planche a dessinés groupés (Gemini a posé 4 cônes dans la même case, là où
+// le gameplay veut un obstacle isolé). Toujours dérivé d'une frame déjà
+// extraite — aucun pixel qui ne vienne pas des planches fournies (C6) — mais
+// recadré pour que la découpe serve le jeu plutôt que la planche contact.
+
+/** Recadre une frame déjà extraite ; ré-ancre au bas-centre du nouveau cadre. */
+function retoucherCrop(sourceKey, newKey, x0, y0, w, h, categorie) {
+  const src = bitmaps.get(sourceKey);
+  if (!src) throw new Error(`retouche : frame source introuvable : ${sourceKey}`);
+  const sprite = crop(src, x0, y0, x0 + w - 1, y0 + h - 1);
+  const rel = `sprites/${categorie}/${newKey.replace(/\./g, '_')}.png`;
+  writeFileSync(join(ROOT, 'assets', rel), encodePNG(sprite));
+  bitmaps.set(newKey, sprite);
+  frames[newKey] = {
+    file: rel,
+    w: sprite.width,
+    h: sprite.height,
+    offset: [-Math.round(sprite.width / 2), -sprite.height],
+  };
+  written++;
+}
+
+// connector.0 : cluster de 4 cônes (composantes connexes relevées à la main :
+// violet en haut, deux oranges sur les côtés, un orange au premier plan bas —
+// c'est ce dernier, le mieux isolé et le plus lisible seul, qu'on garde).
+retoucherCrop('connector.0', 'cone', 11, 20, 15, 17, 'decor');
+
 // ─── Atlas ────────────────────────────────────────────────────────────────────
 
 // Les animations sont dérivées des frames : toute clé « famille.anim.N »

@@ -30,7 +30,7 @@ export const Family = {
 export const ENTITIES = {
   // Solide bas — Ollie suffit.
   curb: { family: Family.LOW, frame: 'curb.0', hitbox: { w: 44, h: 14 } },
-  cone: { family: Family.LOW, frame: 'connector.0', hitbox: { w: 26, h: 18 } },
+  cone: { family: Family.LOW, frame: 'cone', hitbox: { w: 15, h: 17 } },
   hydrant: { family: Family.LOW, frame: 'street.2', hitbox: { w: 22, h: 22 } },
 
   // Solide haut — Flip ou Boost.

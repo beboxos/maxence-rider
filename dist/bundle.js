@@ -1405,7 +1405,7 @@ const __default = {
         -12
       ],
       "rect": [
-        230,
+        246,
         254,
         44,
         12
@@ -1420,7 +1420,7 @@ const __default = {
         -12
       ],
       "rect": [
-        275,
+        291,
         254,
         31,
         12
@@ -1540,7 +1540,7 @@ const __default = {
         -9
       ],
       "rect": [
-        720,
+        736,
         254,
         100,
         9
@@ -1555,7 +1555,7 @@ const __default = {
         -10
       ],
       "rect": [
-        307,
+        323,
         254,
         100,
         10
@@ -1570,7 +1570,7 @@ const __default = {
         -10
       ],
       "rect": [
-        408,
+        424,
         254,
         99,
         10
@@ -1585,7 +1585,7 @@ const __default = {
         -9
       ],
       "rect": [
-        821,
+        837,
         254,
         100,
         9
@@ -1600,7 +1600,7 @@ const __default = {
         -10
       ],
       "rect": [
-        508,
+        524,
         254,
         99,
         10
@@ -1615,7 +1615,7 @@ const __default = {
         -10
       ],
       "rect": [
-        608,
+        624,
         254,
         99,
         10
@@ -1720,7 +1720,7 @@ const __default = {
         -13
       ],
       "rect": [
-        220,
+        236,
         254,
         9,
         13
@@ -1975,7 +1975,7 @@ const __default = {
         -14
       ],
       "rect": [
-        206,
+        222,
         254,
         13,
         14
@@ -2020,7 +2020,7 @@ const __default = {
         -10
       ],
       "rect": [
-        708,
+        724,
         254,
         11,
         10
@@ -2140,7 +2140,7 @@ const __default = {
         -15
       ],
       "rect": [
-        198,
+        214,
         254,
         7,
         15
@@ -2609,6 +2609,21 @@ const __default = {
         216,
         37,
         34
+      ]
+    },
+    "cone": {
+      "file": "sprites/decor/cone.png",
+      "w": 15,
+      "h": 17,
+      "offset": [
+        -8,
+        -17
+      ],
+      "rect": [
+        198,
+        254,
+        15,
+        17
       ]
     }
   },
@@ -3452,9 +3467,13 @@ function createPlayer({ rider = 'skate', direction = 1 } = {}) {
     const fps = FPS[p.animSaut] || 16;
     const iPop = Math.floor(p.tempsAnim * fps);
     if (iPop < ph.pop.length) return ph.pop[iPop];
-    // Le pop est joué, on boucle sur les frames aériennes jusqu'au contact.
-    const iAir = iPop - ph.pop.length;
-    return ph.air[iAir % ph.air.length];
+    // §5 : animation « non-loop ». Le pop puis les frames aériennes se jouent
+    // une fois, linéairement, puis le rider reste posé sur la dernière pose
+    // aérienne jusqu'au contact — un modulo ici ferait battre les bras en
+    // boucle pendant tout le vol (repéré à l'œil : ça ressemblait à un
+    // tremblement, pas à un saut qui monte puis plane).
+    const iAir = Math.min(iPop - ph.pop.length, ph.air.length - 1);
+    return ph.air[iAir];
   }
 
   function indexCrash() {
@@ -3810,7 +3829,7 @@ const Family = {
 const ENTITIES = {
   // Solide bas — Ollie suffit.
   curb: { family: Family.LOW, frame: 'curb.0', hitbox: { w: 44, h: 14 } },
-  cone: { family: Family.LOW, frame: 'connector.0', hitbox: { w: 26, h: 18 } },
+  cone: { family: Family.LOW, frame: 'cone', hitbox: { w: 15, h: 17 } },
   hydrant: { family: Family.LOW, frame: 'street.2', hitbox: { w: 22, h: 22 } },
 
   // Solide haut — Flip ou Boost.
