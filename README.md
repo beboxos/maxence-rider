@@ -19,7 +19,7 @@ Puis ouvrir <http://localhost:8000>. Le jeu fonctionne aussi en ouvrant
 | Phase | Contenu | État |
 |---|---|---|
 | P0 | Pipeline assets : découpe des planches, atlas | ✅ |
-| P1 | Shell, boucle, rendu, input abstrait | à venir |
+| P1 | Shell, boucle, rendu, input abstrait | ✅ |
 | P2 | Rider animé, physique, trois sauts | à venir |
 | P3 | Chunks, obstacles, collisions, crash | à venir |
 | P4 | Grind, manual, combos, scoring | à venir |
@@ -27,6 +27,39 @@ Puis ouvrir <http://localhost:8000>. Le jeu fonctionne aussi en ouvrant
 | P6 | Menus, HUD, persistance | à venir |
 | P7 | Niveaux, endless, rider roller | à venir |
 | P8 | Audio, haptique, réglages, polish | à venir |
+
+## Vérifier le jeu
+
+```bash
+node tools/test.mjs
+```
+
+Les tests font tourner le vrai jeu dans un harnais headless
+([tools/harness.mjs](tools/harness.mjs)) : DOM minimal, contexte 2D qui rastérise
+pour de bon, et surtout **temps piloté à la main**. Chaque exécution est donc
+reproductible au pas de simulation près, ce qui permet d'affirmer des choses comme
+« le rider ne traverse jamais un obstacle » sans dépendre du timing d'un vrai
+navigateur. Les entrées sont injectées sous forme d'événements réels : c'est bien
+le code d'input du jeu qui est exercé.
+
+Pour regarder une image du rendu sans navigateur :
+
+```bash
+node tools/shot.mjs --portrait --debug --jump
+```
+
+## Ouvrir en file://
+
+Chrome et Safari refusent `<script type="module">` sur `file://`. Le code source
+reste en modules ES ; pour l'ouverture par double-clic, régénérer le bundle après
+toute modification de `src/` :
+
+```bash
+node tools/bundle.mjs
+```
+
+`index.html` choisit tout seul : modules ES sur un serveur, `dist/bundle.js` en
+`file://`.
 
 ## Pipeline d'assets
 

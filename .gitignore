@@ -5,3 +5,5 @@
 # Planches de contrôle régénérables (node tools/contact.mjs)
 tools/contact.png
 tools/*_contact.png
+tools/shot.png
+tools/p*_*.png

@@ -1,0 +1,113 @@
+/* Maxence Rider — habillage du canvas et des surcouches DOM.
+   Palette §10 : fond profond, texte crème, accents bornes-incendie / grillage. */
+
+:root {
+  --fond: #12131a;
+  --texte: #f2f0e6;
+  --accent: #ff5c3a;
+  --accent2: #4ed4c4;
+  --or: #ffc93c;
+
+  /* Marges système iOS. Aucun contrôle ne doit tomber dessous (C3). */
+  --haut: env(safe-area-inset-top, 0px);
+  --bas: env(safe-area-inset-bottom, 0px);
+  --gauche: env(safe-area-inset-left, 0px);
+  --droite: env(safe-area-inset-right, 0px);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--fond);
+  color: var(--texte);
+  font: 14px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  /* Pas de scroll élastique, pas de zoom au double-tap, pas de sélection :
+     ce sont des gestes de page, pas des gestes de jeu. */
+  overscroll-behavior: none;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: 100%;
+}
+
+#jeu {
+  display: block;
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  /* Le canvas est déjà rendu en pixels physiques : aucun lissage à l'affichage. */
+  image-rendering: pixelated;
+}
+
+/* ── Surcouches ──────────────────────────────────────────────────────────── */
+
+#ui {
+  position: fixed;
+  inset: 0;
+  padding: calc(var(--haut) + 8px) calc(var(--droite) + 8px)
+           calc(var(--bas) + 8px) calc(var(--gauche) + 8px);
+  pointer-events: none; /* seuls les contrôles reprennent la main */
+}
+
+#ui > * { pointer-events: auto; }
+
+button {
+  font: inherit;
+  color: var(--texte);
+  background: rgba(18, 19, 26, 0.82);
+  border: 1px solid var(--accent2);
+  border-radius: 3px;
+  cursor: pointer;
+  /* §11 : cible tactile de 48 px minimum. */
+  min-width: 48px;
+  min-height: 48px;
+  letter-spacing: 0.1em;
+}
+
+button:hover { border-color: var(--or); }
+
+/* Focus clavier visible sur tous les boutons (§16). */
+button:focus-visible {
+  outline: 2px solid var(--or);
+  outline-offset: 2px;
+}
+
+#pause {
+  position: absolute;
+  top: calc(var(--haut) + 8px);
+  right: calc(var(--droite) + 8px);
+  font-size: 15px;
+}
+
+#chargement, #panne {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  margin: 0;
+  max-width: 32ch;
+  text-align: center;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+#panne {
+  color: var(--accent);
+  text-transform: none;
+  letter-spacing: 0;
+  line-height: 1.6;
+}
+
+[hidden] { display: none !important; }
+
+/* §10 / §16 : rien ne bouge tout seul si l'utilisateur ne le veut pas. */
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
