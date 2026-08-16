@@ -79,15 +79,36 @@ avoir une URL publique stable, séparée du code source du jeu.
 Résumé : aucune collecte de données, tout reste en `localStorage` sur
 l'appareil, pas de tracker, pas de pub, vibration optionnelle uniquement.
 
+## État de la Play Console (17/08/2026)
+
+L'application existe dans la Play Console : **Maxence Rider**, package
+`com.maxencerider.game`, App ID `4973015503917926705`
+(https://play.google.com/console/u/0/developers/5779025965760802751/app/4973015503917926705/app-dashboard).
+
+8 des 11 tâches de configuration sont faites (règles de confidentialité,
+informations de connexion, annonces, identifiant publicitaire, applis
+gouvernementales, fonctionnalités financières, applis de santé, catégorie +
+coordonnées, fiche Play Store complète avec descriptions/captures/icône/image
+de présentation). Il reste 3 tâches, toutes chaînées à la même étape :
+
 ## ⚠️ À faire par toi
 
-- **Questionnaire de classification de contenu** (violence, langage, etc.)
-  dans la Play Console — lié à ton compte développeur, à remplir toi-même.
-- **Créer la fiche d'application** dans la Play Console (Créer une
-  application → coller les champs ci-dessus → uploader les visuels).
+- **Questionnaire de classification de contenu** — Play Console → Contenu de
+  l'application → Classification du contenu. Lié à ton compte développeur, à
+  remplir toi-même. Débloque automatiquement les deux tâches suivantes :
+  - **Cible et contenu** : tranche d'âge visée. Les tranches « 5 ans et moins »,
+    « 6-8 » et « 9-12 » ne sont sélectionnables qu'une fois la classification
+    du contenu envoyée.
+  - **Sécurité des données** : le brouillon est déjà prêt (« Aucune collecte
+    de données déclarée », politique de confidentialité liée) — il ne
+    manque que la tranche d'âge pour pouvoir l'envoyer définitivement.
+- **Tests internes/fermés** : Google exige, pour un nouveau compte développeur,
+  un test fermé avec **au moins 12 testeurs pendant 14 jours consécutifs**
+  avant de débloquer l'accès en production (visible dans « Tester et publier »
+  → Production → « Demander à publier en production », actuellement grisé).
+  Prévois d'y penser tôt, ce délai ne se rattrape pas.
 - **Uploader le bundle signé** : [`dist/app-release.aab`](../dist/app-release.aab)
-  dans Production (ou d'abord en test interne, recommandé pour une première
-  publication).
+  dans un canal de test (interne ou fermé) une fois la classification faite.
 - **Clic final « Envoyer pour validation »** : je m'arrête juste avant, comme
   convenu — c'est le geste irréversible qui déclenche la revue Google.
 
