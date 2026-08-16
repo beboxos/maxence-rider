@@ -1,22 +1,30 @@
-// Maxence Rider — amorçage.
-
 import { createLoop } from './core/loop.js';
 import { createInput, Action } from './core/input.js';
-import { loadAssets, atlas, frame as frameInfo } from './core/assets.js';
+import { loadAssets, atlas, menuHeroImage, frame as frameInfo } from './core/assets.js';
 import { mulberry32 } from './core/rng.js';
 import { createRenderer } from './render/renderer.js';
 import { drawFrame, flipPourDirection } from './render/sprite.js';
 import { createStateMachine, State } from './game/state.js';
-import { createPlayer, RiderState } from './game/player.js';
+import { createPlayer, RiderState, SAUTS } from './game/player.js';
 import { createLevel } from './game/level.js';
 import { construireEntites, entitesActives } from './game/entities.js';
 import { resoudre } from './game/physics.js';
+import { createScoring } from './game/scoring.js';
+import { createParticleSystem } from './game/particles.js';
+import { createCamera } from './game/camera.js';
+import { createParallaxRenderer } from './render/parallax.js';
+import { createAudio } from './core/audio.js';
+import { dessinerCurb2D, dessinerRampe2D, dessinerCone2D } from './render/obstacles.js';
+import { THEMES, getTheme } from './data/themes.js';
 import { Family, ENTITIES } from './data/entities.js';
+
+import { getRider } from './data/riders.js';
 
 const DEBUG = new URLSearchParams(location.search).has('debug');
 
 const canvas = document.getElementById('jeu');
 const boutonPause = document.getElementById('pause');
+const boutonSon = document.getElementById('son');
 const chargement = document.getElementById('chargement');
 const panne = document.getElementById('panne');
 
@@ -27,7 +35,15 @@ const SOL = 40; // hauteur du sol depuis le bas de l'espace virtuel
 const MARGE_VUE = 80; // px hors écran avant de considérer une entité invisible
 
 const player = createPlayer({ rider: 'skate', direction: 1 });
+const scoring = createScoring();
+const particles = createParticleSystem();
+const camera = createCamera();
+const parallax = createParallaxRenderer();
+const audio = createAudio();
 const monde = { defilement: 0, prevDefilement: 0 };
+
+let dernierSautAudio = null;
+let dernierComboAudio = 1;
 
 const BONUS_RAMPE = 1.4; // §6.5
 
@@ -51,18 +67,24 @@ function nouvelleSeed() {
   return (Date.now() % 0xffffffff) >>> 0;
 }
 
-function demarrerRun(seed = nouvelleSeed(), { obstacles = true } = {}) {
+function demarrerRun(seed = nouvelleSeed(), { obstacles = true, rider = 'skate', direction = 1 } = {}) {
   run.seed = seed;
   run.vies = 3;
-  run.invincibleJusque = 0;
   run.tempsTotal = 0;
+  run.invincibleJusque = 1.8; // Invincibilité clignotante de 1.8s dès le départ de la run
+
+  scoring.perdreCombo();
+  scoring.etat.score = 0;
+  scoring.etat.meilleurCombo = 1;
+  particles.reinitGrind();
+  camera.reset();
+  audio.startMusic();
+
+  player.stats = getRider(rider);
+  player.direction = direction;
 
   level = createLevel({ rng: mulberry32(seed) });
   level.assurerJusque(0);
-  // `obstacles: false` sert aux tests de physique pure (sauts, coyote time…) :
-  // sans lui, un test qui avance des dizaines de frames finirait par heurter
-  // un vrai obstacle du niveau généré, pour une raison qui n'a rien à voir
-  // avec ce qu'il vérifie.
   entites = obstacles ? construireEntites(level.placés) : [];
   curseurEntites = 0;
 
@@ -81,11 +103,41 @@ function respawn() {
   monde.prevDefilement = cible;
   player.poser(Math.round(view.w * 0.3), solY());
   player.bonusRampe = 1;
-  run.invincibleJusque = run.tempsTotal + 1.2;
-  // Un respawn peut faire reculer le défilement : le curseur d'entités actives
-  // n'est valide que pour un défilement croissant (game/entities.js), il faut
-  // le réarmer pour qu'il puisse revoir les entités déjà dépassées.
+  run.invincibleJusque = run.tempsTotal + 1.8;
   curseurEntites = 0;
+  camera.reset();
+}
+
+function labelTrick(trickType) {
+  if (player.stats.id === 'roller') {
+    if (trickType === 'boost') return 'BOOST';
+    if (trickType === 'flip') return 'HEELFLIP';
+    return 'OLLIE';
+  }
+  if (trickType === 'boost') return 'NO-COMPLY';
+  if (trickType === 'flip') return 'KICKFLIP';
+  return 'OLLIE';
+}
+
+function enregistrerTrickReussi() {
+  if (!player.dernierSautReussi) return;
+  const trickType = player.dernierSautReussi;
+  player.dernierSautReussi = null;
+  const defSaut = SAUTS[trickType];
+  if (!defSaut) return;
+
+  const label = labelTrick(trickType);
+  const points = Math.round(defSaut.points * player.stats.pointsTrick);
+  const perfect = !!player.perfectLandingDernier;
+  scoring.enregistrerTrick(label, points, player.x, player.y - 25, { perfect });
+  audio.sfx.land(perfect);
+
+  if (perfect) {
+    camera.shake(3, 0.15);
+    for (let k = 0; k < 3; k++) particles.etincelle(player.x, player.y, player.direction);
+  } else {
+    particles.poussiere(player.x, player.y, player.direction);
+  }
 }
 
 function majCollisions(scrollAvant, scrollApres) {
@@ -96,12 +148,64 @@ function majCollisions(scrollAvant, scrollApres) {
 
   for (const entite of actives) {
     const resultat = resoudre(entite, player, solY(), scrollAvant, scrollApres);
+
     if (resultat === 'crash') {
       player.crasher();
+      scoring.perdreCombo();
+      particles.reinitGrind();
+      camera.shake(8, 0.35); // §10 : shake d'impact
+      audio.sfx.crash();
       return;
     }
+
+    if (resultat === 'clear') {
+      if ((entite.family === Family.LOW || entite.family === Family.HIGH || entite.family === Family.GAP || entite.family === Family.RAIL) && !entite.cleared) {
+        entite.cleared = true;
+        player.ajouterBoost(1.0, 0.25); // +25% de vitesse pendant 1s par obstacle sauté (s'accumule !)
+        scoring.enregistrerTrick('JUMP OVER', 50, player.x, player.y - 22, { perfect: false });
+        audio.sfx.combo(2);
+        for (let k = 0; k < 2; k++) particles.etincelle(player.x, player.y, player.direction);
+      }
+    }
+
     if (resultat === 'ramp') {
       player.bonusRampe = BONUS_RAMPE;
+    }
+
+    if (resultat === 'grind') {
+      enregistrerTrickReussi();
+      player.entrerGrind(entite, solY());
+      particles.etincelle(player.x, player.y, player.direction);
+      audio.sfx.grindTick();
+    }
+
+    if (resultat === 'collect') {
+      entite.collected = true;
+      const cx = screenXDe(entite.worldX, monde.defilement);
+      const cy = solY() - (entite.elevation || 0);
+
+      if (entite.type === 'life_cross') {
+        run.vies = Math.min(5, run.vies + 1);
+        scoring.afficherBandeau('+1 VIE ! 💚', cx, cy - 25, '#2ed573');
+        audio.sfx.coin();
+        for (let k = 0; k < 6; k++) particles.etincelle(player.x, player.y, player.direction);
+      } else {
+        scoring.ramasserCollectible(cx, cy);
+        audio.sfx.coin();
+
+        if (entite.chunkInstance) {
+          entite.chunkInstance.coinsRamasses++;
+          if (
+            entite.chunkInstance.coinsRamasses === entite.chunkInstance.totalCoins
+            && entite.chunkInstance.totalCoins > 0
+            && !entite.chunkInstance.cleanLineAccordee
+          ) {
+            entite.chunkInstance.cleanLineAccordee = true;
+            scoring.cleanLine(player.x, player.y - 30);
+            audio.sfx.cleanLine();
+          }
+        }
+      }
     }
   }
 }
@@ -116,23 +220,83 @@ function majJeu(dt) {
   player.update(dt, { input, solY: solY() });
 
   if (player.state !== RiderState.CRASH) {
-    // Toujours croissant : c'est une distance parcourue, pas une coordonnée
-    // écran. Le sens visuel (§6.2 : niveaux impairs à droite, pairs à gauche)
-    // n'intervient que dans la projection monde→écran (screenXDe), jamais ici
-    // — sinon un niveau "vers la gauche" ferait reculer le défilement, et
-    // game/level.js ne saurait plus jusqu'où générer de nouveaux chunks.
     monde.defilement += player.vitesse * dt;
   }
   player.x = Math.round(view.w * 0.3);
   player.prevX = player.x;
 
   level.assurerJusque(monde.defilement);
-  // Le niveau peut avoir généré de nouveaux chunks : la liste plate d'entités
-  // doit suivre (§14 : reconstruite seulement quand du contenu neuf apparaît,
-  // pas à chaque frame).
   if (entites.length < level.placés.reduce((n, p) => n + p.chunk.entities.length, 0)) {
     entites = construireEntites(level.placés);
   }
+
+  // Changement de niveau tous les 10 000 points & gain d'une vie
+  const distM = Math.floor(player.distance / 10);
+  const scoreTotal = scoring.scoreTotal(distM);
+  const palierCalcule = Math.min(5, Math.floor(scoreTotal / 10000) + 1);
+  if (level && palierCalcule > level.palier) {
+    level.palier = palierCalcule;
+    player.niveauPalier = palierCalcule;
+    run.vies = Math.min(5, run.vies + 1); // +1 vie gagnée tous les 10 000 points !
+    const themeNiveau = getTheme(palierCalcule);
+    scoring.afficherBandeau(`⚡ NIVEAU ${palierCalcule} : ${themeNiveau.nom.toUpperCase()} ! +1 VIE 💚`, player.x, player.y - 45, '#2ed573');
+    audio.sfx.cleanLine();
+    camera.shake(5, 0.3);
+    for (let k = 0; k < 8; k++) particles.etincelle(player.x, player.y, player.direction);
+  } else if (level) {
+    player.niveauPalier = level.palier;
+  }
+
+  // Déclenchement son de saut
+  if (player.state === RiderState.AIR && player.sautEnCours && player.sautEnCours !== dernierSautAudio) {
+    dernierSautAudio = player.sautEnCours;
+    audio.sfx.jump(player.sautEnCours);
+  } else if (player.state !== RiderState.AIR) {
+    dernierSautAudio = null;
+  }
+
+  // §6.4 : Atterrissage d'un trick au sol
+  if (player.state === RiderState.LAND) {
+    enregistrerTrickReussi();
+  }
+
+  // §6.4 : Actions continues (Grind & Manual)
+  if (player.state === RiderState.GRIND) {
+    scoring.grinding(dt);
+    particles.etincellesDeGrind(dt, player.x, player.y, player.direction);
+    if (Math.floor(run.tempsTotal * 15) % 2 === 0) {
+      audio.sfx.grindTick();
+    }
+
+    // Détection de fin naturelle de rail
+    if (player.grindEntite) {
+      const ex = screenXDe(player.grindEntite.worldX, monde.defilement);
+      const demiW = (player.grindEntite.hitbox?.w || 12) / 2;
+      const entiteMin = ex - demiW;
+      const entiteMax = ex + demiW;
+      const riderMin = player.x - 14 / 2;
+      const riderMax = player.x + 14 / 2;
+      const encoreDessus = riderMax > entiteMin && riderMin < entiteMax;
+      if (!encoreDessus) {
+        const chute = (player.grindEntite.elevation || 0) > 0 || (solY() - player.grindY) > 2;
+        player.sortirGrind({ chute });
+        scoring.finGrind();
+        particles.reinitGrind();
+      }
+    }
+  } else if (player.state === RiderState.MANUAL) {
+    scoring.manualing(dt);
+  }
+
+  // Déclenchement son de combo
+  if (scoring.etat.multiplicateur > dernierComboAudio) {
+    audio.sfx.combo(scoring.etat.multiplicateur);
+  }
+  dernierComboAudio = scoring.etat.multiplicateur;
+
+  scoring.update(dt);
+  particles.update(dt);
+  camera.update(dt);
 
   if (player.state === RiderState.CRASH) {
     if (player.crashTermine) {
@@ -144,6 +308,7 @@ function majJeu(dt) {
     majCollisions(scrollAvant, monde.defilement);
   }
 
+  if (input.consume(Action.TOGGLE_MUTE)) basculerSon();
   if (input.consume(Action.RESTART)) demarrerRun();
 }
 
@@ -153,38 +318,89 @@ function screenXDe(worldX, scroll) {
   return player.x + player.direction * (worldX - scroll);
 }
 
-function dessinerSol(sol, scroll) {
-  ctx.fillStyle = '#2a2c3a';
-  ctx.fillRect(0, sol, view.w, view.h - sol);
-  ctx.fillStyle = '#3a3d4e';
-  const pas = 32;
-  const decalage = (((scroll * player.direction) % pas) + pas) % pas;
-  for (let sx = -decalage; sx < view.w; sx += pas) {
-    ctx.fillRect(Math.round(sx), sol, 1, view.h - sol);
-  }
+/** Canette de soda / collectible procédural pixel art (§6.6). */
+function dessinerCollectible(cx, cy) {
+  const bob = Math.sin(run.tempsTotal * 6 + cx * 0.05) * 1.5;
+  const y = Math.round(cy + bob);
+  const x = Math.round(cx);
+  ctx.fillStyle = '#ffc93c';
+  ctx.fillRect(x - 4, y - 5, 8, 10);
   ctx.fillStyle = '#4ed4c4';
-  ctx.fillRect(0, sol, view.w, 1);
+  ctx.fillRect(x - 4, y - 2, 8, 4);
+  ctx.fillStyle = '#f2f0e6';
+  ctx.fillRect(x - 3, y - 5, 6, 1);
+  ctx.fillStyle = '#12131a';
+  ctx.fillRect(x - 4, y + 4, 8, 1);
 }
 
-/** Trou dans le sol : procédural, comme le sol lui-même (les vraies tuiles
- * de terrain arrivent en P5, voir §6.5 famille GAP dans data/entities.js). */
-function dessinerGap(entite, sol, scroll) {
-  const x = screenXDe(entite.worldX, scroll);
-  const w = entite.hitbox.w;
-  ctx.fillStyle = '#0c0d12';
-  ctx.fillRect(Math.round(x - w / 2), sol, w, view.h - sol);
+function dessinerBonusVie(x, y) {
+  const t = performance.now() / 1000;
+  const bob = Math.sin(t * 5 + x * 0.05) * 3;
+  const cy = Math.round(y + bob);
+  const cx = Math.round(x);
+  const pulse = Math.sin(t * 8) * 0.2 + 0.8;
+
+  ctx.save();
+  // Halo vert
+  ctx.fillStyle = `rgba(46, 213, 115, ${0.35 * pulse})`;
+  ctx.beginPath();
+  ctx.arc(cx, cy, 10, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Disque vert extérieur (15×15)
+  ctx.fillStyle = '#2ed573';
+  ctx.beginPath();
+  ctx.arc(cx, cy, 7.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Disque blanc intérieur
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath();
+  ctx.arc(cx, cy, 5.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Croix verte type pharmacie (✚)
+  ctx.fillStyle = '#2ed573';
+  ctx.fillRect(cx - 1.5, cy - 4, 3, 8);
+  ctx.fillRect(cx - 4, cy - 1.5, 8, 3);
+  ctx.restore();
 }
 
-function dessinerEntites(sol, scroll) {
+function dessinerEntites(sol, scroll, theme) {
   const { actives } = entitesActives(entites, 0, scroll, view.w / 2 + MARGE_VUE);
   for (const entite of actives) {
     const x = screenXDe(entite.worldX, scroll);
     if (x < -MARGE_VUE || x > view.w + MARGE_VUE) continue;
 
     if (entite.family === Family.GAP) {
-      dessinerGap(entite, sol, scroll);
+      continue; // Les gaps sont gérés par le renderer de sol/parallaxe
+    }
+
+    if (entite.family === Family.COLLECTIBLE) {
+      if (!entite.collected) {
+        if (entite.type === 'life_cross') {
+          dessinerBonusVie(x, sol - (entite.elevation || 0));
+        } else {
+          dessinerCollectible(x, sol - (entite.elevation || 0));
+        }
+      }
       continue;
     }
+
+    // Rendu 2D profil pur pour les obstacles clés
+    if (entite.type === 'curb') {
+      dessinerCurb2D(ctx, x, sol - (entite.elevation || 0), player.direction, theme);
+      continue;
+    }
+    if (entite.type === 'cone') {
+      dessinerCone2D(ctx, x, sol - (entite.elevation || 0), theme);
+      continue;
+    }
+    if (entite.type === 'quarterpipe') {
+      dessinerRampe2D(ctx, x, sol - (entite.elevation || 0), player.direction, theme);
+      continue;
+    }
+
     const info = frameInfo(entite.frame);
     if (!info) continue;
     drawFrame(ctx, entite.frame, x, sol - entite.elevation, {
@@ -201,19 +417,95 @@ function dessinerEntites(sol, scroll) {
   }
 }
 
+function dessinerParticules() {
+  particles.pool.forEachActive((p) => {
+    const key = particles.frameKey(p);
+    if (!key) return;
+    drawFrame(ctx, key, p.x, p.y, {
+      flip: flipPourDirection(p.direction),
+    });
+  });
+}
+
+function dessinerBandeaux() {
+  scoring.bandeaux.forEachActive((b) => {
+    const { y, alpha } = scoring.etatBandeau(b);
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
+    ctx.fillStyle = b.couleur;
+    ctx.font = 'bold 8px ui-monospace, monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(b.texte, b.x, y);
+    ctx.restore();
+  });
+}
+
+function dessinerHUD(theme) {
+  const distM = Math.floor(player.distance / 10);
+  const scoreTotal = scoring.scoreTotal(distM);
+
+  // Score en haut à droite
+  ctx.fillStyle = '#f2f0e6';
+  ctx.font = 'bold 9px ui-monospace, monospace';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'top';
+  ctx.fillText(`${scoreTotal} PTS`, view.w - 8, 8);
+
+  // Distance et Thème
+  ctx.fillStyle = '#8a8d9e';
+  ctx.font = '8px ui-monospace, monospace';
+  ctx.textAlign = 'left';
+  const hudY = DEBUG ? view.h - 14 : 8;
+  ctx.fillText(`${distM} m · ${theme.nom}`, 8, hudY);
+
+  // Vies en haut à gauche
+  ctx.fillStyle = '#2ed573';
+  ctx.font = 'bold 8px ui-monospace, monospace';
+  ctx.textAlign = 'left';
+  let coeurs = '';
+  for (let i = 0; i < run.vies; i++) coeurs += '💚 ';
+  ctx.fillText(coeurs.trim(), 8, 22);
+
+  // Multiplicateur / Combo actif au centre-haut
+  if (scoring.etat.multiplicateur > 1 || scoring.etat.enAttente > 0) {
+    ctx.save();
+    ctx.fillStyle = scoring.etat.multiplicateur >= 10 ? '#ff5c3a' : (scoring.etat.grace ? '#4ed4c4' : '#ffc93c');
+    ctx.font = 'bold 10px ui-monospace, monospace';
+    ctx.textAlign = 'center';
+    const comboTexte = `COMBO ×${scoring.etat.multiplicateur}`;
+    ctx.fillText(comboTexte, view.w / 2, 8);
+
+    if (scoring.etat.enAttente > 0) {
+      ctx.font = '7px ui-monospace, monospace';
+      ctx.fillStyle = '#f2f0e6';
+      ctx.fillText(`+${scoring.etat.enAttente}`, view.w / 2, 20);
+    }
+    ctx.restore();
+  }
+}
+
 function dessinerJeu(alpha) {
   const y = player.prevY + (player.y - player.prevY) * alpha;
   const scroll = monde.prevDefilement + (monde.defilement - monde.prevDefilement) * alpha;
   const sol = solY();
+  const theme = getTheme(level?.palier || 1);
+  const cam = camera.getOffset(player.vitesse, player.direction);
 
-  ctx.fillStyle = '#1b1d27';
-  ctx.fillRect(0, 0, view.w, view.h);
+  ctx.save();
+  // Application du screen shake sur le monde (le HUD reste stable)
+  ctx.translate(Math.round(cam.shakeX), Math.round(cam.shakeY));
 
-  dessinerSol(sol, scroll);
-  dessinerEntites(sol, scroll);
+  // Gaps actifs pour le trou dans le sol
+  const { actives } = entitesActives(entites, 0, scroll, view.w);
+  const gaps = actives.filter((e) => e.family === Family.GAP);
+
+  // Parallaxe 3 couches (§14)
+  parallax.render(ctx, view, theme, sol, scroll, player.direction, gaps);
+
+  dessinerEntites(sol, scroll, theme);
 
   const invincible = run.tempsTotal < run.invincibleJusque;
-  // Clignotement pendant l'invincibilité post-respawn (§6.7).
   const visible = !invincible || Math.floor(run.tempsTotal * 12) % 2 === 0;
   if (visible) {
     drawFrame(ctx, player.frameKey(), player.x, y, {
@@ -222,23 +514,209 @@ function dessinerJeu(alpha) {
     });
   }
 
+  // Traînées de vitesse cyan pendant le boost après grind
+  if (player.boostGrindTimer > 0) {
+    const alphaBoost = Math.min(1, player.boostGrindTimer);
+    ctx.save();
+    ctx.strokeStyle = `rgba(78, 212, 196, ${0.6 * alphaBoost})`;
+    ctx.lineWidth = 1.5;
+    const dir = player.direction;
+    for (let k = 0; k < 3; k++) {
+      const ly = y - 8 - k * 8;
+      const lx = player.x - dir * (14 + k * 5);
+      ctx.beginPath();
+      ctx.moveTo(lx, ly);
+      ctx.lineTo(lx - dir * 16, ly);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  dessinerParticules();
+  dessinerBandeaux();
+
   if (DEBUG) {
     ctx.fillStyle = 'rgba(255,201,60,0.9)';
     ctx.fillRect(player.x - 3, Math.round(y), 7, 1);
     ctx.fillRect(player.x, Math.round(y) - 3, 1, 7);
   }
+
+  ctx.restore();
+
+  dessinerHUD(theme);
+}
+
+// ── Records & Persistance ───────────────────────────────────────────────────
+
+const STORAGE_HIGHSCORE = 'maxence_highscore';
+let highscore = 0;
+try {
+  if (typeof localStorage !== 'undefined') {
+    highscore = parseInt(localStorage.getItem(STORAGE_HIGHSCORE) || '0', 10) || 0;
+  }
+} catch {}
+
+function verifierNouveauRecord(score) {
+  if (score > highscore) {
+    highscore = score;
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(STORAGE_HIGHSCORE, String(highscore));
+      }
+    } catch {}
+    return true;
+  }
+  return false;
+}
+
+let selectedRider = 'skate';
+let nouveauRecordPartie = false;
+
+function lancerPartie() {
+  demarrerRun(nouvelleSeed(), { rider: selectedRider });
+  jeu.go(State.PLAY);
 }
 
 // ── Écrans ───────────────────────────────────────────────────────────────────
 
 const jeu = createStateMachine(State.BOOT, {
+  [State.MENU]: {
+    enter: () => { input.clear(); audio.stopMusic(); },
+    update: (dt) => {
+      input.update();
+      monde.defilement += 50 * dt;
+      if (input.consume(Action.CONFIRM)) {
+        lancerPartie();
+      }
+    },
+    render: () => {
+      const theme = getTheme(1);
+      parallax.render(ctx, view, theme, solY(), monde.defilement, 1, []);
+
+      // Voile sombre
+      ctx.fillStyle = 'rgba(12, 14, 22, 0.82)';
+      ctx.fillRect(0, 0, view.w, view.h);
+
+      ctx.save();
+      const hero = menuHeroImage();
+      const t = performance.now() / 1000;
+      const floatY = Math.sin(t * 2.5) * 3;
+
+      // ── CARTE HÉROS MAXENCE (GAUCHE) ──
+      const cardW = 126;
+      const cardH = 164;
+      const cardX = 24;
+      const cardY = Math.round(36 + floatY);
+
+      // Fond de carte sombre
+      ctx.fillStyle = '#10131e';
+      ctx.fillRect(cardX, cardY, cardW, cardH);
+      ctx.fillStyle = '#181d2e';
+      ctx.fillRect(cardX + 2, cardY + 2, cardW - 4, cardH - 4);
+
+      // Bordure néon cyan
+      ctx.strokeStyle = '#4ed4c4';
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(cardX + 0.5, cardY + 0.5, cardW - 1, cardH - 1);
+
+      // Illustration de Maxence
+      if (hero && hero.complete && hero.naturalWidth > 0) {
+        ctx.drawImage(hero, cardX + 5, cardY + 5, cardW - 10, cardH - 30);
+      } else {
+        ctx.fillStyle = '#4ed4c4';
+        ctx.font = 'bold 24px ui-monospace, monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('🛹', cardX + cardW / 2, cardY + cardH / 2 - 10);
+      }
+
+      // Badge sous le portrait
+      ctx.fillStyle = '#ffc93c';
+      ctx.fillRect(cardX + 4, cardY + cardH - 22, cardW - 8, 16);
+      ctx.fillStyle = '#12131a';
+      ctx.font = 'bold 8px ui-monospace, monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('⚡ MAXENCE RIDER', cardX + cardW / 2, cardY + cardH - 14);
+
+      // ── TITRE ET BOUTONS (DROITE) ──
+      const rightX = 310;
+
+      // Ombre néon orange
+      ctx.fillStyle = '#ff5c3a';
+      ctx.font = 'bold 20px ui-monospace, monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('MAXENCE RIDER', rightX + 2, 34 + floatY + 2);
+
+      // Titre cyan
+      ctx.fillStyle = '#4ed4c4';
+      ctx.fillText('MAXENCE RIDER', rightX, 34 + floatY);
+
+      // Sous-titre
+      ctx.fillStyle = '#ffc93c';
+      ctx.font = 'bold 8px ui-monospace, monospace';
+      ctx.fillText('ARCADE 2D ACTION · SKATE & ROLLER', rightX, 52 + floatY);
+
+      // Record
+      if (highscore > 0) {
+        ctx.fillStyle = '#f2f0e6';
+        ctx.font = '8px ui-monospace, monospace';
+        ctx.fillText(`🏆 RECORD : ${highscore} PTS`, rightX, 68);
+      }
+
+      // Sélecteur de Rider (boutons tactiles larges)
+      const rw = 100, rh = 28;
+      const rx1 = Math.round(rightX - rw - 8);
+      const rx2 = Math.round(rightX + 8);
+      const ry = 86;
+
+      // Bouton Skate
+      ctx.fillStyle = selectedRider === 'skate' ? '#4ed4c4' : '#242838';
+      ctx.fillRect(rx1, ry, rw, rh);
+      ctx.fillStyle = selectedRider === 'skate' ? '#10131e' : '#141724';
+      ctx.fillRect(rx1 + 2, ry + 2, rw - 4, rh - 4);
+      ctx.fillStyle = selectedRider === 'skate' ? '#4ed4c4' : '#8a8d9e';
+      ctx.font = 'bold 9px ui-monospace, monospace';
+      ctx.fillText('🛹 SKATE', rx1 + rw / 2, ry + rh / 2);
+
+      // Bouton Roller
+      ctx.fillStyle = selectedRider === 'roller' ? '#4ed4c4' : '#242838';
+      ctx.fillRect(rx2, ry, rw, rh);
+      ctx.fillStyle = selectedRider === 'roller' ? '#10131e' : '#141724';
+      ctx.fillRect(rx2 + 2, ry + 2, rw - 4, rh - 4);
+      ctx.fillStyle = selectedRider === 'roller' ? '#4ed4c4' : '#8a8d9e';
+      ctx.font = 'bold 9px ui-monospace, monospace';
+      ctx.fillText('🛼 ROLLER', rx2 + rw / 2, ry + rh / 2);
+
+      // Gros Bouton Jouer
+      const bw = 216, bh = 32;
+      const bx = Math.round(rightX - bw / 2);
+      const by = 126;
+      const pulse = Math.sin(t * 6) > 0 ? '#ff5c3a' : '#ffc93c';
+      ctx.fillStyle = pulse;
+      ctx.fillRect(bx, by, bw, bh);
+      ctx.fillStyle = '#12131a';
+      ctx.fillRect(bx + 2, by + 2, bw - 4, bh - 4);
+      ctx.fillStyle = '#f2f0e6';
+      ctx.font = 'bold 11px ui-monospace, monospace';
+      ctx.fillText('▶  COMMENCER LA PARTIE', rightX, by + bh / 2);
+
+      // Contrôles
+      ctx.fillStyle = '#8a8d9e';
+      ctx.font = '7px ui-monospace, monospace';
+      ctx.fillText('ESPACE : SAUT / FLIP   ·   BAS : MANUAL   ·   GRINDS SUR RAILS', rightX, view.h - 22);
+      ctx.fillText('TOUCHEZ OU APPUYEZ SUR ESPACE POUR JOUER', rightX, view.h - 10);
+
+      ctx.restore();
+    },
+  },
   [State.PLAY]: {
-    enter: () => { input.clear(); },
+    enter: () => { input.clear(); audio.startMusic(); },
     update: majJeu,
     render: dessinerJeu,
   },
   [State.PAUSE]: {
-    enter: () => { input.clear(); },
+    enter: () => { input.clear(); audio.stopMusic(); },
     update: () => { input.update(); },
     render: (alpha) => {
       dessinerJeu(alpha);
@@ -248,23 +726,68 @@ const jeu = createStateMachine(State.BOOT, {
       texteCentre('Reprendre : Échap, P, ou le bouton', view.h / 2 + 10, '#8a8d9e');
     },
   },
-  // Écran minimal pour P3 : la présentation « sticker » complète arrive en P6.
   [State.GAMEOVER]: {
-    enter: () => { input.clear(); },
+    enter: () => {
+      input.clear();
+      audio.stopMusic();
+      const distM = Math.floor(player.distance / 10);
+      const total = scoring.scoreTotal(distM);
+      nouveauRecordPartie = verifierNouveauRecord(total);
+    },
     update: () => {
       input.update();
       if (input.consume(Action.RESTART) || input.consume(Action.CONFIRM)) {
-        demarrerRun();
-        jeu.go(State.PLAY);
+        lancerPartie();
+      }
+      if (input.consume(Action.PAUSE)) {
+        jeu.go(State.MENU);
       }
     },
     render: (alpha) => {
       dessinerJeu(alpha);
-      ctx.fillStyle = 'rgba(18,19,26,0.82)';
+      ctx.fillStyle = 'rgba(18,19,26,0.85)';
       ctx.fillRect(0, 0, view.w, view.h);
-      texteCentre('GAME OVER', view.h / 2 - 8, '#ff5c3a');
-      texteCentre(`Distance : ${(player.distance / 10).toFixed(0)} m`, view.h / 2 + 4, '#f2f0e6');
-      texteCentre('R pour recommencer', view.h / 2 + 16, '#8a8d9e');
+
+      if (nouveauRecordPartie) {
+        texteCentre('🏆 NOUVEAU RECORD !', view.h / 2 - 36, '#ffc93c');
+      }
+      texteCentre('GAME OVER', view.h / 2 - 20, '#ff5c3a');
+
+      const distM = Math.floor(player.distance / 10);
+      const scoreTotal = scoring.scoreTotal(distM);
+      texteCentre(`Score : ${scoreTotal} pts`, view.h / 2 - 6, '#f2f0e6');
+      texteCentre(`Distance : ${distM} m · Record : ${highscore} pts`, view.h / 2 + 6, '#8a8d9e');
+
+      // Boutons interactifs : Rejouer & Menu Principal / Choix Rider
+      const bw1 = 96, bw2 = 136, bh = 24;
+      const bx1 = Math.round(view.w / 2 - bw1 - 6);
+      const bx2 = Math.round(view.w / 2 + 6);
+      const by = Math.round(view.h / 2 + 18);
+
+      // Bouton 1 : ↺ REJOUER
+      ctx.fillStyle = '#ff5c3a';
+      ctx.fillRect(bx1, by, bw1, bh);
+      ctx.fillStyle = '#12131a';
+      ctx.fillRect(bx1 + 1, by + 1, bw1 - 2, bh - 2);
+      ctx.fillStyle = '#ff5c3a';
+      ctx.font = 'bold 8px ui-monospace, monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('↺  REJOUER', bx1 + bw1 / 2, by + bh / 2);
+
+      // Bouton 2 : 🏠 MENU / RIDER
+      ctx.fillStyle = '#4ed4c4';
+      ctx.fillRect(bx2, by, bw2, bh);
+      ctx.fillStyle = '#12131a';
+      ctx.fillRect(bx2 + 1, by + 1, bw2 - 2, bh - 2);
+      ctx.fillStyle = '#4ed4c4';
+      ctx.font = 'bold 8px ui-monospace, monospace';
+      ctx.fillText('🏠  MENU / RIDER', bx2 + bw2 / 2, by + bh / 2);
+
+      // Raccourcis
+      ctx.fillStyle = '#8a8d9e';
+      ctx.font = '7px ui-monospace, monospace';
+      ctx.fillText('R : REJOUER   ·   ÉCHAP : RETOUR AU MENU', view.w / 2, view.h / 2 + 54);
     },
   },
 });
@@ -285,19 +808,92 @@ function basculerPause() {
   boutonPause.setAttribute('aria-label', jeu.is(State.PAUSE) ? 'Reprendre' : 'Pause');
 }
 
+function basculerSon() {
+  const mute = audio.toggleMute();
+  if (boutonSon) {
+    boutonSon.textContent = mute ? '🔇' : '🔊';
+    boutonSon.setAttribute('aria-label', mute ? 'Activer le son' : 'Couper le son');
+  }
+}
+
 const input = createInput(canvas, { onPause: basculerPause });
 boutonPause.addEventListener('click', basculerPause);
+if (boutonSon) {
+  boutonSon.textContent = audio.isMuted() ? '🔇' : '🔊';
+  boutonSon.addEventListener('click', (e) => {
+    e.stopPropagation();
+    basculerSon();
+  });
+}
+
+canvas.addEventListener('pointerdown', () => {
+  audio.ensureResumed();
+});
+
+canvas.addEventListener('click', (e) => {
+  const rect = canvas.getBoundingClientRect
+    ? canvas.getBoundingClientRect()
+    : { left: 0, top: 0, width: canvas.width || 960, height: canvas.height || 540 };
+  const clientX = e.clientX ?? (rect.left + rect.width / 2);
+  const clientY = e.clientY ?? (rect.top + rect.height / 2);
+  const scaleX = view.w / (rect.width || 1);
+  const scaleY = view.h / (rect.height || 1);
+  const cx = (clientX - rect.left) * scaleX;
+  const cy = (clientY - rect.top) * scaleY;
+  const centreX = view.w / 2;
+
+  if (jeu.is(State.MENU)) {
+    const rightX = 310;
+    const rw = 100, rh = 28, ry = 86;
+    const rx1 = Math.round(rightX - rw - 8);
+    const rx2 = Math.round(rightX + 8);
+
+    // Clic / Touch sur Bouton Skate
+    if (cx >= rx1 - 15 && cx <= rx1 + rw + 8 && cy >= ry - 8 && cy <= ry + rh + 8) {
+      selectedRider = 'skate';
+      audio.ensureResumed();
+      audio.sfx.coin();
+      return;
+    }
+    // Clic / Touch sur Bouton Roller
+    if (cx >= rx2 - 8 && cx <= rx2 + rw + 15 && cy >= ry - 8 && cy <= ry + rh + 8) {
+      selectedRider = 'roller';
+      audio.ensureResumed();
+      audio.sfx.coin();
+      return;
+    }
+    // Clic / Touch sur COMMENCER ou bas de l'écran
+    const bw = 216, bh = 32, by = 126;
+    if (cx >= rightX - bw / 2 - 14 && cx <= rightX + bw / 2 + 14 && cy >= by - 6 && cy <= by + bh + 10) {
+      lancerPartie();
+      return;
+    }
+    if (cy > 120) {
+      lancerPartie();
+    }
+  } else if (jeu.is(State.GAMEOVER)) {
+    const bw1 = 96, bw2 = 136, bh = 24;
+    const bx1 = Math.round(centreX - bw1 - 6);
+    const bx2 = Math.round(centreX + 6);
+    const by = Math.round(view.h / 2 + 18);
+
+    // Clic sur "↺ REJOUER"
+    if (cx >= bx1 - 8 && cx <= bx1 + bw1 + 4 && cy >= by - 6 && cy <= by + bh + 6) {
+      lancerPartie();
+      return;
+    }
+    // Clic sur "🏠 MENU / RIDER" ou ailleurs sur l'écran
+    jeu.go(State.MENU);
+  }
+});
 
 // ── Orientation et redimensionnement ─────────────────────────────────────────
-// C3 : relayout à chaud, sans rechargement ni perte d'état.
 
 function surRedimensionnement() {
   const ancienSol = solY();
   renderer.resize();
   const nouveauSol = solY();
   if (nouveauSol !== ancienSol) {
-    // On conserve la hauteur au-dessus du sol, pas la coordonnée absolue :
-    // un rider en plein saut ne doit ni se téléporter au sol ni sortir de l'écran.
     const hauteur = ancienSol - player.y;
     player.y = nouveauSol - hauteur;
     player.prevY = player.y;
@@ -326,20 +922,22 @@ const boucle = createLoop({
 });
 
 function dessinerDebug() {
+  const distM = Math.floor(player.distance / 10);
   const lignes = [
     `${boucle.stats.fps} fps · ${boucle.stats.updates} maj`,
     `${view.w}x${view.h} x${view.scale} ${view.portrait ? 'portrait' : 'paysage'}`,
     `${player.state} ${player.frameKey()}`,
-    `v ${player.vitesse.toFixed(0)} px/s · ${(player.distance / 10).toFixed(0)} m`,
+    `v ${player.vitesse.toFixed(0)} px/s · ${distM} m`,
+    `score ${scoring.scoreTotal(distM)} (combo x${scoring.etat.multiplicateur} +${scoring.etat.enAttente})`,
     `palier ${level?.palier ?? '-'} · vies ${run.vies} · cp ${level?.checkpoints.length ?? 0}`,
-    `entités ${entites.length} · seed ${run.seed}`,
+    `entités ${entites.length} · pool part: ${particles.pool.count}/${particles.pool.capacite}`,
     player.state === RiderState.AIR ? `vol ${player.tempsVol.toFixed(2)}s` : '',
   ].filter(Boolean);
   ctx.font = '6px ui-monospace, monospace';
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
   ctx.fillStyle = 'rgba(18,19,26,0.7)';
-  ctx.fillRect(2, 2, 140, lignes.length * 8 + 4);
+  ctx.fillRect(2, 2, 160, lignes.length * 8 + 4);
   ctx.fillStyle = '#ffc93c';
   lignes.forEach((l, i) => ctx.fillText(l, 5, 6 + i * 8));
 }
@@ -348,8 +946,8 @@ function dessinerDebug() {
 
 if (DEBUG) {
   window.__maxence = {
-    player, monde, view, jeu, boucle, input, atlas, run,
-    Action, State, RiderState, Family, ENTITIES, solY,
+    player, monde, view, jeu, boucle, input, atlas, run, scoring, particles, camera, parallax, audio,
+    Action, State, RiderState, Family, ENTITIES, SAUTS, THEMES, getTheme, solY,
     get level() { return level; },
     get entites() { return entites; },
     demarrerRun, respawn,
@@ -360,7 +958,7 @@ loadAssets()
   .then(() => {
     chargement.hidden = true;
     demarrerRun();
-    jeu.go(State.PLAY);
+    jeu.go(State.MENU);
     boucle.start();
   })
   .catch((err) => {

@@ -24,16 +24,27 @@
 // d'auteur difficile à respecter et impossible à vérifier à l'œil.
 
 import { VITESSE_MAX_LEAN } from '../data/tuning.js';
+import { ENTITIES, Family } from '../data/entities.js';
+
+function estObstacle(e) {
+  const def = ENTITIES[e.type];
+  if (!def) return false;
+  return def.family !== Family.DECOR && def.family !== Family.COLLECTIBLE;
+}
 
 export function dernierObstacleX(chunk) {
   let max = -Infinity;
-  for (const e of chunk.entities) if (e.x > max) max = e.x;
+  for (const e of chunk.entities) {
+    if (estObstacle(e) && e.x > max) max = e.x;
+  }
   return max === -Infinity ? null : max;
 }
 
 export function premierObstacleX(chunk) {
   let min = Infinity;
-  for (const e of chunk.entities) if (e.x < min) min = e.x;
+  for (const e of chunk.entities) {
+    if (estObstacle(e) && e.x < min) min = e.x;
+  }
   return min === Infinity ? null : min;
 }
 

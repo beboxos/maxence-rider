@@ -7,3 +7,17 @@ tools/contact.png
 tools/*_contact.png
 tools/shot.png
 tools/p*_*.png
+tools/shot_*.png
+
+# Android : garder le code source du projet, exclure ce qui se régénère et les
+# clés — même une debug.keystore standard n'a rien à faire dans un repo.
+android/debug.keystore
+android/**/build/
+android/.gradle/
+android/local.properties
+
+# APK compilé : artefact de build (node tools/build_apk.sh), pas un livrable
+# source. Idem pour le bundle web, sauf que dist/bundle.js reste committé —
+# lui est le vrai livrable attendu par le brief (§16 : ouverture en file://).
+dist/*.apk
+dist/*.apk.idsig

@@ -12,6 +12,19 @@ import { ENTITIES } from '../data/entities.js';
 export function construireEntites(chunksPlaces) {
   const liste = [];
   for (const { chunk, offset } of chunksPlaces) {
+    const chunkInstance = {
+      id: chunk.id,
+      offset,
+      totalCoins: 0,
+      coinsRamasses: 0,
+      cleanLineAccordee: false,
+    };
+
+    // Compter d'abord les coins du chunk
+    for (const e of chunk.entities) {
+      if (e.type === 'coin') chunkInstance.totalCoins++;
+    }
+
     for (const e of chunk.entities) {
       const def = ENTITIES[e.type];
       if (!def) throw new Error(`type d'entité inconnu : ${e.type}`);
@@ -19,9 +32,12 @@ export function construireEntites(chunksPlaces) {
         type: e.type,
         family: def.family,
         frame: def.frame,
+        grindable: def.grindable || false,
         worldX: offset + e.x,
         hitbox: { w: e.w ?? def.hitbox.w, h: def.hitbox.h },
         elevation: e.y || 0, // hauteur au-dessus du sol (rails suspendus, §8)
+        collected: false,
+        chunkInstance,
       });
     }
   }

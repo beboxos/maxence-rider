@@ -22,8 +22,8 @@ Puis ouvrir <http://localhost:8000>. Le jeu fonctionne aussi en ouvrant
 | P1 | Shell, boucle, rendu, input abstrait | ✅ |
 | P2 | Rider animé, physique, trois sauts | ✅ |
 | P3 | Chunks, obstacles, collisions, crash | ✅ |
-| P4 | Grind, manual, combos, scoring | à venir |
-| P5 | Décors, parallaxe, caméra | à venir |
+| P4 | Grind, manual, combos, scoring, particules | ✅ |
+| P5 | Décors, parallaxe 3 couches, caméra & ambiances | ✅ |
 | P6 | Menus, HUD, persistance | à venir |
 | P7 | Niveaux, endless, rider roller | à venir |
 | P8 | Audio, haptique, réglages, polish | à venir |
@@ -110,6 +110,17 @@ bandes, blocs, mode de découpe, noms. Aucun réglage n'est en dur dans
 - `objects` — segmentation par composantes connexes sur toute la bande. Pour les
   décors, où plusieurs objets partagent une case et où les rails débordent sur
   trois cases.
+
+## Packaging Android / PWA (hors brief)
+
+Le projet inclut aussi un manifest PWA (`manifest.json`, `sw.js`) et un projet
+Android natif (`android/`, WebView autour du build web) — voir
+[docs/ANDROID.md](docs/ANDROID.md). C'est une extension au-delà du §1 du brief
+(« 100 % web statique »), gardée car fonctionnelle et indépendante : le jeu web
+lui-même reste jouable sans rien de tout ça, `python3 -m http.server` ou
+`file://` suffisent toujours. `node tools/sync_android.mjs` recopie les
+derniers assets web dans le projet Android ; `node tools/build_apk.sh`
+compile l'APK (non commité, régénérable — voir `.gitignore`).
 
 ## Structure
 

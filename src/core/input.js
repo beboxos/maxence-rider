@@ -16,6 +16,7 @@ export const Action = {
   PAUSE: 'PAUSE',
   RESTART: 'RESTART',
   CONFIRM: 'CONFIRM',
+  TOGGLE_MUTE: 'TOGGLE_MUTE',
 };
 
 // Un appui bref est un ollie, un appui tenu un flip. Le seuil doit être franchi
@@ -100,6 +101,7 @@ export function createInput(target, { onPause } = {}) {
       case 'ArrowRight': case 'KeyD': held[Action.LEAN_FWD] = true; break;
       case 'Escape': case 'KeyP': press(Action.PAUSE); onPause?.(); break;
       case 'KeyR': press(Action.RESTART); break;
+      case 'KeyM': press(Action.TOGGLE_MUTE); break;
       case 'Enter': press(Action.CONFIRM); break;
       default: break;
     }

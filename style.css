@@ -86,6 +86,13 @@ button:focus-visible {
   font-size: 15px;
 }
 
+#son {
+  position: absolute;
+  top: calc(var(--haut) + 8px);
+  right: calc(var(--droite) + 64px);
+  font-size: 15px;
+}
+
 #chargement, #panne {
   position: fixed;
   left: 50%;

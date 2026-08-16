@@ -1,13 +1,11 @@
 #!/usr/bin/env node
 // Capture d'écran du jeu, sans navigateur.
 //
-//   node tools/shot.mjs                          → paysage, tools/shot.png
+//   node tools/shot.mjs                          → écran titre
+//   node tools/shot.mjs --play                   → en jeu
 //   node tools/shot.mjs --portrait               → portrait
 //   node tools/shot.mjs --frames=120 --out=x.png → après 120 frames
 //   node tools/shot.mjs --pause                  → écran de pause
-//
-// Utile pour regarder le rendu réel sans dépendre d'un navigateur pilotable,
-// et pour comparer deux états côte à côte pendant une mise au point.
 
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -27,6 +25,17 @@ const nbFrames = Number(flag('frames', 90));
 const sortie = flag('out', 'tools/shot.png');
 
 const h = await boot({ width, height, dpr: 1, search: has('debug') ? '?debug=1' : '' });
+
+// Laisser le chargement initial s'exécuter
+h.wait(200);
+h.frames(5);
+
+if (has('play')) {
+  // Simule le clic sur "COMMENCER" sur l'écran titre
+  h.canvas.dispatch('click', { clientX: width / 2, clientY: height / 2 });
+  h.frames(2);
+}
+
 h.frames(nbFrames);
 
 if (has('jump')) {
@@ -39,6 +48,14 @@ if (has('jump')) {
 if (has('pause')) {
   h.keyDown('Escape');
   h.frames(2);
+}
+
+if (has('gameover')) {
+  const M = globalThis.window.__maxence;
+  if (M) {
+    M.jeu.go(M.State.GAMEOVER);
+    h.frames(2);
+  }
 }
 
 const chemin = join(ROOT, sortie);

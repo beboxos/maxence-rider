@@ -13,12 +13,20 @@ import { join } from 'node:path';
 
 // Modules purs (aucune dépendance DOM) : testables directement sous Node, sans
 // passer par le harnais canvas.
-const { resoudre, LARGEUR_RIDER } = await import(join(ROOT, 'src/game/physics.js'));
+const { resoudre, LARGEUR_RIDER, chevauchementHorizontal } = await import(join(ROOT, 'src/game/physics.js'));
 const { construireEntites, entitesActives } = await import(join(ROOT, 'src/game/entities.js'));
 const { placerSuivant, dernierObstacleX, premierObstacleX } = await import(join(ROOT, 'src/game/chunks.js'));
 const { TOUS_LES_CHUNKS, RESPIRATION, BONUS } = await import(join(ROOT, 'src/data/chunks.js'));
 const { VITESSE_MAX_LEAN } = await import(join(ROOT, 'src/data/tuning.js'));
 const { Family } = await import(join(ROOT, 'src/data/entities.js'));
+const { createPool } = await import(join(ROOT, 'src/core/pool.js'));
+const { createScoring } = await import(join(ROOT, 'src/game/scoring.js'));
+const { createParticleSystem } = await import(join(ROOT, 'src/game/particles.js'));
+const { THEMES, getTheme } = await import(join(ROOT, 'src/data/themes.js'));
+const { createCamera } = await import(join(ROOT, 'src/game/camera.js'));
+const { createParallaxRenderer } = await import(join(ROOT, 'src/render/parallax.js'));
+const { createAudio } = await import(join(ROOT, 'src/core/audio.js'));
+const { dessinerCurb2D, dessinerRampe2D, dessinerCone2D } = await import(join(ROOT, 'src/render/obstacles.js'));
 
 let réussis = 0;
 const échecs = [];
@@ -56,6 +64,7 @@ function reset({ obstacles = false } = {}) {
   h.wait(400);
   h.frames(2);      // absorbe le grand dt provoqué par l'attente
   M.demarrerRun(SEED_TEST, { obstacles });
+  M.jeu.go(M.State.PLAY);
   h.frames(2);
 }
 
@@ -472,10 +481,8 @@ verifier('le rider est reposé au sol', proche(player.y, M.solY(), 1));
 verifier('invincibilité active juste après le respawn',
   M.run.tempsTotal < M.run.invincibleJusque);
 
-// Pendant l'invincibilité, un nouveau crash ne doit pas être déclenché par les
-// collisions (mais crasher() reste un appel direct valide, hors invariant).
-h.frames(80); // dépasse les 1,2 s d'invincibilité (§6.7)
-verifier('l\'invincibilité se termine après 1,2 s', M.run.tempsTotal >= M.run.invincibleJusque);
+h.frames(120); // dépasse les 1,8 s d'invincibilité (§6.7)
+verifier('l\'invincibilité se termine après 1,8 s', M.run.tempsTotal >= M.run.invincibleJusque);
 
 // Trois crashes consécutifs → game over.
 player.crasher();
@@ -534,6 +541,7 @@ h.frames(2);
 titre('Rendu');
 
 reset();
+h.wait(2000); // dépasse l'invincibilité initiale clignotante de 1,8 s
 h.frames(2);
 const px = (x, y) => {
   const i = (y * h.canvas.width + x) * 4;
@@ -565,6 +573,7 @@ verifier('le rider est peint au sol', pixelsRider() > 300, `${pixelsRider()} px`
 
 // En l'air, la zone au-dessus du sol est occupée et le sol est dégagé.
 reset();
+M.run.invincibleJusque = 0;
 tapLong();
 h.frames(16);
 verifier('le rider est peint en vol', pixelsRider() > 300, `${pixelsRider()} px`);
@@ -575,6 +584,298 @@ if (M.view.oy > 0) {
   const [fr, fg, fb] = px(Math.floor(h.canvas.width / 2), Math.floor(M.view.oy / 2));
   verifier('bandes de fond hors viewport', fr < 30 && fg < 30 && fb < 40, `rgb(${fr},${fg},${fb})`);
 }
+
+// ─── Pool d'objets (O(1) sans GC) ─────────────────────────────────────────────
+titre('Pool d\'objets (O(1) sans GC)');
+
+const testPool = createPool(() => ({ val: 0 }), 3);
+verifier('pool créé avec capacité', testPool.capacite === 3 && testPool.count === 0);
+const o1 = testPool.acquire();
+const o2 = testPool.acquire();
+verifier('acquisition augmente le count', testPool.count === 2 && o1 !== null && o2 !== null);
+testPool.release(o1);
+verifier('libération décrémente le count', testPool.count === 1);
+const o3 = testPool.acquire();
+const o4 = testPool.acquire();
+verifier('pool plein atteint la capacité', testPool.count === 3);
+const oOverflow = testPool.acquire();
+verifier('pool saturé renvoie null sans crash', oOverflow === null);
+
+// ─── Scoring, Combos et Multiplicateur (§6.4, §6.6) ──────────────────────────
+titre('Scoring, Combos et Multiplicateur (§6.4, §6.6)');
+
+const sc = createScoring();
+verifier('score initial à zéro', sc.etat.score === 0 && sc.etat.multiplicateur === 1);
+
+// Enregistrement d'un trick
+sc.enregistrerTrick('OLLIE', 50, 100, 100);
+verifier('premier trick : +50 en attente, multiplicateur passe à 2', sc.etat.enAttente === 50 && sc.etat.multiplicateur === 2);
+
+sc.enregistrerTrick('KICKFLIP', 150, 100, 100);
+verifier('second trick : x2 appliqué, multiplicateur passe à 3', sc.etat.enAttente === 350 && sc.etat.multiplicateur === 3);
+
+// Multiplicateur plafonné à 10
+for (let i = 0; i < 15; i++) sc.enregistrerTrick('OLLIE', 50, 100, 100);
+verifier('multiplicateur plafonné à 10', sc.etat.multiplicateur === 10);
+
+// Inactivité 1.8 s -> encaissement
+sc.update(1.85);
+verifier('inactivité 1.8s : score en attente encaissé', sc.etat.score > 0 && sc.etat.enAttente === 0 && sc.etat.multiplicateur === 1);
+
+// Perte sur crash
+sc.enregistrerTrick('OLLIE', 50, 100, 100);
+const scoreAvantCrash = sc.etat.score;
+sc.perdreCombo();
+verifier('crash : combo et points en attente perdus', sc.etat.enAttente === 0 && sc.etat.multiplicateur === 1 && sc.etat.score === scoreAvantCrash);
+
+// Collectibles et Clean Line
+const scoreAvantCoin = sc.etat.score;
+sc.ramasserCollectible(100, 100);
+verifier('collectible : +100 pts immédiat', sc.etat.score === scoreAvantCoin + 100);
+
+const scoreAvantClean = sc.etat.score;
+sc.cleanLine(100, 100);
+verifier('clean line : +500 pts immédiat', sc.etat.score === scoreAvantClean + 500);
+
+// Formule de score total avec distance
+verifier('scoreTotal inclut la distance (distance_m * 2)', sc.scoreTotal(100) === sc.etat.score + 200);
+
+// Fenêtre de grâce de 200 ms après grind
+sc.etat.score = 0;
+sc.grinding(0.2); // 2 ticks de 0.1s -> +40 pts
+verifier('grind : accumulation de +20 pts / 0.1s', sc.etat.enAttente === 40);
+sc.finGrind();
+verifier('finGrind active la fenêtre de grâce', sc.etat.grace === true);
+sc.update(0.1); // 100 ms < 200 ms
+verifier('grâce active : combo non encore encaissé', sc.etat.enAttente === 40);
+sc.update(0.15); // > 200 ms au total
+verifier('fin de grâce (200 ms) : encaissement', sc.etat.score === 40 && sc.etat.enAttente === 0);
+
+// ─── Particules (§5, §14) ───────────────────────────────────────────────────
+titre('Particules (§5, §14)');
+
+const ps = createParticleSystem();
+verifier('système de particules initialement vide', ps.pool.count === 0);
+ps.poussiere(100, 200, 1);
+verifier('émission de poussière active une particule', ps.pool.count === 1);
+ps.update(1.0);
+verifier('particules recyclées automatiquement après fin d\'anim', ps.pool.count === 0);
+
+// ─── Gameplay P4 en jeu (Grind, Manual, Combos, Collectibles) ─────────────────
+titre('Gameplay P4 en jeu (Grind, Manual, Combos, Collectibles)');
+
+// Chevauchement horizontal
+const entiteRail = { worldX: 200, hitbox: { w: 90, h: 10 } };
+const ratioCentre = chevauchementHorizontal(entiteRail, 144, 200, 1);
+verifier('chevauchement horizontal calculé à 100% au centre', ratioCentre >= 0.99, `${(ratioCentre * 100).toFixed(0)}%`);
+const ratioBord = chevauchementHorizontal(entiteRail, 144, 200 - 40, 1);
+verifier('chevauchement partiel sur le bord', ratioBord > 0.3 && ratioBord < 0.9, `${(ratioBord * 100).toFixed(0)}%`);
+
+// Test de l'état GRIND sur le rider
+reset({ obstacles: false });
+const solG = M.solY();
+const railTest = {
+  type: 'rail',
+  family: Family.RAIL,
+  worldX: M.monde.defilement,
+  elevation: 4,
+  hitbox: { w: 300, h: 10 },
+  grindable: true,
+};
+player.entrerGrind(railTest, solG);
+verifier('player.state passe en GRIND', player.state === M.RiderState.GRIND);
+verifier('position Y verrouillée au sommet du rail', player.y === solG - 4 - 10, `y=${player.y}`);
+h.frames(7); // > 100 ms
+verifier('score accumulé pendant le grind', M.scoring.etat.enAttente >= 20, `enAttente=${M.scoring.etat.enAttente}`);
+
+// Saut depuis le grind
+h.keyDown('Space');
+h.frames(2);
+h.keyUp('Space');
+h.frames(2);
+verifier('saut depuis le grind : décollage en AIR', player.state === M.RiderState.AIR, player.state);
+verifier('le saut depuis le grind active le boost de vitesse 1s', player.boostGrindTimer > 0, `${player.boostGrindTimer.toFixed(2)}s`);
+verifier('vitesse augmentée pendant le boost de grind (+35%)', player.vitesse >= 240 * 1.3, `${player.vitesse.toFixed(1)} px/s`);
+h.frames(65); // > 1.0 s
+verifier('le boost de vitesse se dissipe après 1 seconde', player.boostGrindTimer === 0);
+
+// Manual avec le rider roller
+reset({ obstacles: false });
+M.demarrerRun(SEED_TEST, { obstacles: false, rider: 'roller' });
+verifier('rider roller initialisé', player.stats.id === 'roller');
+h.keyDown('ArrowDown');
+h.frames(5);
+verifier('maintien de flèche bas au sol déclenche le MANUAL', player.state === M.RiderState.MANUAL, player.state);
+h.frames(7);
+verifier('accumulation de points en manual', M.scoring.etat.enAttente >= 10, `enAttente=${M.scoring.etat.enAttente}`);
+h.keyUp('ArrowDown');
+h.frames(2);
+verifier('relâchement de flèche bas sort du manual', player.state === M.RiderState.ROLL, player.state);
+
+// Collectible au vol
+reset({ obstacles: false });
+const coinTest = {
+  type: 'coin',
+  family: Family.COLLECTIBLE,
+  worldX: M.monde.defilement,
+  elevation: 0,
+  hitbox: { w: 12, h: 12 },
+  collected: false,
+};
+const resCoin = resoudre(coinTest, player, solG, M.monde.defilement, M.monde.defilement + 2);
+verifier('collision avec un collectible résolue en collect', resCoin === 'collect');
+
+// Combo x10 atteignable (critère d'acceptation P4)
+M.scoring.perdreCombo();
+for (let trick = 1; trick <= 10; trick++) {
+  M.scoring.enregistrerTrick('OLLIE', 50, 100, 100);
+}
+verifier('combo x10 atteignable', M.scoring.etat.multiplicateur === 10, `combo=x${M.scoring.etat.multiplicateur}`);
+
+// Accumulation de plusieurs boosts simultanés
+reset({ obstacles: false });
+player.ajouterBoost(1.0, 0.35); // Boost grind
+player.ajouterBoost(1.0, 0.25); // Boost saut d'obstacle
+h.frames(2);
+verifier('2 boosts actifs simultanément s\'accumulent', player.boosts.length === 2, `${player.boosts.length}`);
+verifier('vitesse boostée cumulée (+60% de boost)', player.vitesse >= 240 * 1.55, `${player.vitesse.toFixed(1)} px/s`);
+
+// Franchissement d'obstacle en l'air
+const curbTest = { type: 'curb', family: Family.LOW, worldX: M.monde.defilement + 50, hitbox: { w: 44, h: 14 } };
+const resClear = resoudre(curbTest, { ...player, y: solG - 40, prevY: solG - 40, auSol: false }, solG, 0, 100);
+verifier('franchissement d\'obstacle en l\'air résolu en clear', resClear === 'clear');
+
+// Collectible Croix Verte (Bonus Vie +1)
+reset({ obstacles: false });
+const lifeCrossTest = {
+  type: 'life_cross',
+  family: Family.COLLECTIBLE,
+  worldX: M.monde.defilement,
+  elevation: 0,
+  hitbox: { w: 16, h: 16 },
+  collected: false,
+};
+const resLife = resoudre(lifeCrossTest, player, solG, M.monde.defilement, M.monde.defilement + 2);
+verifier('collision avec life_cross résolue en collect', resLife === 'collect');
+
+// Gain de vie au changement de palier 10 000 pts
+reset({ obstacles: false });
+M.run.vies = 2;
+M.scoring.etat.score = 12000;
+h.frames(2);
+verifier('palier 10k pts donne +1 vie', M.run.vies === 3, `vies=${M.run.vies}`);
+
+// Multi-grinds et rails longs
+const chunkDouble = TOUS_LES_CHUNKS.find(c => c.id === 'p4_double_grind');
+verifier('chunk double grind présent dans la bibliothèque', !!chunkDouble);
+const chunkTriple = TOUS_LES_CHUNKS.find(c => c.id === 'p4_triple_grind');
+verifier('chunk triple grind présent dans la bibliothèque', !!chunkTriple);
+
+// Progression par niveau tous les 10 000 points
+reset({ obstacles: false });
+M.scoring.etat.score = 25000;
+h.frames(2);
+verifier('palier calculé à 25k pts = niveau 3 (École)', M.level.palier === 3, `Niveau ${M.level.palier}`);
+verifier('thème niveau 3 est Le Campus & École', getTheme(M.level.palier).nom === 'Le Campus & École');
+verifier('vitesse globale majorée au niveau 3', player.vitesse > 240 * 1.1, `${player.vitesse.toFixed(1)} px/s`);
+
+// ─── 5 Ambiances et Thèmes (§9) ──────────────────────────────────────────────
+titre('5 Ambiances et Thèmes (§9)');
+
+verifier('5 thèmes distincts configurés', Object.keys(THEMES).length === 5);
+for (let p = 1; p <= 5; p++) {
+  const t = getTheme(p);
+  verifier(`thème palier ${p} (${t.nom}) : ciel, tuiles et sol définis`,
+    !!(t.cielHaut && t.cielBas && t.solLigne && t.tuilesSol.length > 0 && t.murs.length > 0));
+}
+verifier('getTheme borne les paliers hors limite', getTheme(99).id === THEMES[5].id && getTheme(-1).id === THEMES[1].id);
+
+// ─── Caméra dynamique et Screen Shake (§6.2, §10) ────────────────────────────
+titre('Caméra dynamique et Screen Shake (§6.2, §10)');
+
+const cam = createCamera();
+const offRepos = cam.getOffset(240, 1);
+verifier('caméra : anticipation à vitesse 240 px/s = +60 px', offRepos.anticipationX === 60);
+
+cam.shake(8, 0.3);
+const offShake = cam.getOffset(240, 1);
+verifier('shake déclenché génère un décalage', Math.abs(offShake.shakeX) > 0 || Math.abs(offShake.shakeY) > 0);
+
+cam.update(0.35); // expiration du shake
+const offApres = cam.getOffset(240, 1);
+verifier('shake amorti et terminé après sa durée', offApres.shakeX === 0 && offApres.shakeY === 0);
+
+// ─── Rendu Parallaxe 3 couches (§14) ─────────────────────────────────────────
+titre('Rendu Parallaxe 3 couches (§14)');
+
+const pr = createParallaxRenderer();
+verifier('moteur de parallaxe instanciable sans erreur', typeof pr.render === 'function');
+
+// ─── Audio synthétisé Web Audio API (§12) ────────────────────────────────────
+titre('Audio synthétisé Web Audio API (§12)');
+
+const aud = createAudio();
+verifier('moteur audio instancié avec état muet configurable', typeof aud.isMuted === 'function');
+const initMute = aud.isMuted();
+aud.toggleMute();
+verifier('toggleMute inverse l\'état', aud.isMuted() === !initMute);
+aud.setMuted(initMute);
+verifier('setMuted rétablit l\'état', aud.isMuted() === initMute);
+verifier('tous les SFX sont appelables sans erreur',
+  typeof aud.sfx.jump === 'function'
+  && typeof aud.sfx.land === 'function'
+  && typeof aud.sfx.grindTick === 'function'
+  && typeof aud.sfx.coin === 'function'
+  && typeof aud.sfx.cleanLine === 'function'
+  && typeof aud.sfx.crash === 'function'
+  && typeof aud.sfx.combo === 'function');
+
+// ─── Obstacles 2D de profil (§6.5) ───────────────────────────────────────────
+titre('Obstacles 2D de profil (§6.5)');
+
+verifier('renderers 2D de profil définis',
+  typeof dessinerCurb2D === 'function'
+  && typeof dessinerRampe2D === 'function'
+  && typeof dessinerCone2D === 'function');
+
+// ─── Game Over interactif & Boutons Rejouer / Menu ───────────────────────────
+titre('Game Over interactif & Boutons Rejouer / Menu');
+
+reset({ obstacles: false });
+M.jeu.go(M.State.GAMEOVER);
+verifier('état GAMEOVER actif', M.jeu.is(M.State.GAMEOVER));
+
+// Clic sur "REJOUER" (gauche du centre, y=165)
+h.canvas.dispatch('click', { clientX: 370, clientY: 330 });
+verifier('clic sur Rejouer relance immédiatement en PLAY', M.jeu.is(M.State.PLAY));
+verifier('3 vies réinitialisées au restart', M.run.vies === 3);
+
+// Retour au Game Over puis Clic sur "MENU / RIDER" (droite du centre, y=165)
+M.jeu.go(M.State.GAMEOVER);
+h.canvas.dispatch('click', { clientX: 628, clientY: 330 });
+verifier('clic sur Menu / Rider renvoie à l\'écran titre State.MENU', M.jeu.is(M.State.MENU));
+
+// ─── Écran d'accueil & Titre Maxence Rider (P6) ──────────────────────────────
+titre('Écran d\'accueil & Titre Maxence Rider (P6)');
+
+M.jeu.go(M.State.MENU);
+verifier('état MENU / Écran titre actif', M.jeu.is(M.State.MENU));
+
+// Défilement du décor en fond de menu
+const scrollMenuAvant = M.monde.defilement;
+h.frames(10);
+verifier('le décor défile doucement en arrière-plan du menu', M.monde.defilement > scrollMenuAvant);
+
+// Sélection du rider Roller sur le menu (clientX ~ 730, clientY ~ 200)
+h.canvas.dispatch('click', { clientX: 730, clientY: 200 });
+verifier('état reste MENU après sélection de rider (ne démarre pas)', M.jeu.is(M.State.MENU));
+
+// Clic sur le bouton COMMENCER (clientX 620, clientY 284)
+h.canvas.dispatch('click', { clientX: 620, clientY: 284 });
+verifier('clic sur COMMENCER lance la partie en PLAY', M.jeu.is(M.State.PLAY));
+verifier('le rider actif est bien Maxence Roller', M.player.stats.id === 'roller');
+verifier('le rider commence avec une invincibilité protectrice', M.run.invincibleJusque > 0);
+verifier('le rider commence la partie avec 3 vies', M.run.vies === 3);
 
 // ─── Orientation du sprite ───────────────────────────────────────────────────
 titre('Orientation du sprite');
@@ -593,6 +894,8 @@ const hb = await boot({ width: 960, height: 540, dpr: 1, search: '?debug=1', bun
 const MB = globalThis.window.__maxence;
 verifier('le bundle démarre', !!MB);
 if (MB) {
+  MB.demarrerRun();
+  MB.jeu.go(MB.State.PLAY);
   hb.frames(10);
   verifier('le bundle joue une animation de rider',
     /^skate\.(roll|idle)\.\d$/.test(MB.player.frameKey()), MB.player.frameKey());
@@ -611,3 +914,14 @@ if (échecs.length) {
   for (const e of échecs) console.log(`  ✗ ${e}`);
   process.exit(1);
 }
+
+// Sortie explicite. Sans elle, le process reste vivant indéfiniment après le
+// bilan (`_getActiveHandles()`/`_getActiveResourcesInfo()` ne montrent pourtant
+// rien, `--trace-exit` n'affiche rien non plus, et le comportement varie d'un
+// run à l'autre à code strictement identique) — signe d'une race condition
+// dans l'environnement de test plutôt que d'un handle mal fermé identifiable ;
+// suspect probable : l'interaction entre le mock Image/Canvas du harnais et le
+// nombre bien plus élevé de chargements d'assets (menu_hero.png, thèmes) que
+// lorsque ce fichier ne testait que P1-P3. N'affecte pas le jeu lui-même — un
+// vrai navigateur n'a pas ce cycle de vie de process à gérer.
+process.exit(0);

@@ -11,20 +11,34 @@ import ATLAS from '../../assets/atlas.js';
 const BASE = 'assets/';
 
 let sheet = null;
+let heroImg = null;
 
 export const atlas = ATLAS;
 
 export function loadAssets() {
-  return new Promise((resolve, reject) => {
+  const pSheet = new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => { sheet = img; resolve(); };
     img.onerror = () => reject(new Error(`texture introuvable : ${ATLAS.sheet}`));
     img.src = BASE + ATLAS.sheet;
   });
+
+  const pHero = new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => { heroImg = img; resolve(); };
+    img.onerror = () => { resolve(); }; // Pas d'erreur fatale si absent
+    img.src = BASE + 'menu_hero.png';
+  });
+
+  return Promise.all([pSheet, pHero]);
 }
 
 export function sheetImage() {
   return sheet;
+}
+
+export function menuHeroImage() {
+  return heroImg;
 }
 
 /** Métadonnées d'une frame, ou null si la clé n'existe pas. */
