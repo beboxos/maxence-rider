@@ -17,6 +17,13 @@ export const Action = {
   RESTART: 'RESTART',
   CONFIRM: 'CONFIRM',
   TOGGLE_MUTE: 'TOGGLE_MUTE',
+
+  // §16 : toutes les actions accessibles au clavier — menus et réglages
+  // compris, pas seulement le jeu. Distinctes de CROUCH_MANUAL/LEAN_* : ces
+  // dernières ne servent qu'en jeu, jamais en menu, donc pas de conflit à
+  // partager ArrowUp/ArrowDown, mais un nom séparé garde chaque contexte lisible.
+  MENU_UP: 'MENU_UP',
+  MENU_DOWN: 'MENU_DOWN',
 };
 
 // Un appui bref est un ollie, un appui tenu un flip. Le seuil doit être franchi
@@ -96,6 +103,11 @@ export function createInput(target, { onPause } = {}) {
       case 'ArrowDown': case 'KeyS':
         e.preventDefault();
         held[Action.CROUCH_MANUAL] = true;
+        press(Action.MENU_DOWN);
+        break;
+      case 'ArrowUp': case 'KeyW':
+        e.preventDefault();
+        press(Action.MENU_UP);
         break;
       case 'ArrowLeft': case 'KeyA': held[Action.LEAN_BACK] = true; break;
       case 'ArrowRight': case 'KeyD': held[Action.LEAN_FWD] = true; break;

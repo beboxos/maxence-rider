@@ -143,6 +143,30 @@ verifier('petit écran : pas de débordement',
 h.resize(960, 540, 1);
 h.frames(2);
 
+// §16 : « aucun glitch, aucune perte d'état » — avec le contenu réel (P4/P5 :
+// obstacles, parallaxe, HUD, thème), pas seulement le joueur nu comme les
+// vérifications ci-dessus, écrites avant que ce contenu n'existe.
+{
+  M.demarrerRun(555, { obstacles: true });
+  M.jeu.go(M.State.PLAY);
+  h.frames(30);
+  const etatAvant2 = M.jeu.current;
+  const scoreAvant = M.scoring.scoreTotal(0);
+  const nbEntitesAvant = M.entites.length;
+
+  h.resize(540, 960, 1); h.frames(10);
+  h.resize(960, 540, 1); h.frames(10);
+  h.resize(320, 800, 1); h.frames(10); // portrait étroit, cas mobile extrême
+  h.resize(960, 540, 1); h.frames(2);
+
+  verifier('rotations multiples : aucune exception levée (implicite si on arrive ici)', true);
+  verifier('rotations multiples : état de jeu préservé', M.jeu.current === etatAvant2, M.jeu.current);
+  verifier('rotations multiples : le score n\'est pas perdu', M.scoring.scoreTotal(0) === scoreAvant);
+  verifier('rotations multiples : les entités du niveau restent chargées',
+    M.entites.length === nbEntitesAvant, `${nbEntitesAvant} → ${M.entites.length}`);
+}
+reset();
+
 // ─── Pas fixe ────────────────────────────────────────────────────────────────
 titre('Pas fixe');
 
@@ -1085,8 +1109,63 @@ verifier('haptique désactivée dans les réglages → aucune vibration',
   h.vibrations.length === 0, JSON.stringify(h.vibrations));
 
 M.storage.setSetting('haptics', true);
+localStorage.clear();
+reset({ obstacles: false });
 
-M.storage.setSetting('haptics', true);
+// ─── Navigation clavier (§16 : toute action accessible au clavier) ──────────
+titre('Navigation clavier du menu et des réglages');
+
+M.jeu.go(M.State.MENU);
+h.frames(2);
+
+// MENU : 5 items — skate, roller, commencer, scores, réglages — cyclique.
+verifier('le menu démarre le curseur sur COMMENCER', M.player.stats.id === 'skate'); // sanity : état de base
+h.keyDown('KeyW'); h.frames(1); // MENU_UP depuis 'commencer' (index 2) → 'roller' (1)
+h.keyDown('Enter'); h.frames(2);
+verifier('ArrowUp/W navigue vers le haut sans souris ni tactile',
+  !M.jeu.is(M.State.PLAY), M.jeu.current); // roller verrouillé : Entrée ne lance rien
+
+M.storage.debloquerRider('roller');
+h.keyDown('Enter'); h.frames(2); // reconfirme sur 'roller', débloqué cette fois
+verifier('Entrée active l\'item survolé au clavier (roller débloqué)',
+  M.selectedRider === 'roller');
+
+h.keyDown('KeyS'); h.frames(1); // MENU_DOWN : roller(1) → commencer(2)
+h.keyDown('KeyS'); h.frames(1); // commencer(2) → scores(3)
+h.keyDown('Enter'); h.frames(2);
+verifier('ArrowDown/S + Entrée atteint et active SCORES sans souris', M.jeu.is(M.State.SCORES));
+
+h.keyDown('Escape'); h.frames(2);
+verifier('Échap revient au menu depuis les scores', M.jeu.is(M.State.MENU));
+
+// SETTINGS : 5 items — 4 réglages + « effacer », navigation + activation.
+M.jeu.go(M.State.SETTINGS);
+h.frames(2);
+const musiqueAvant = M.storage.settings.music;
+h.keyDown('KeyS'); h.frames(1); // 0 (sons) → 1 (musique)
+h.keyDown('Enter'); h.frames(2);
+verifier('navigation clavier + Entrée bascule un réglage sans souris',
+  M.storage.settings.music === !musiqueAvant);
+
+// Descendre jusqu'à « Effacer mes données » (index = nb de réglages). Sortir
+// et rentrer réinitialise le curseur à 0 (enter() du handler SETTINGS) : sans
+// ça, le curseur était déjà à 1 (musique) après le test précédent, et 4 pas de
+// plus retombe sur 0 par le modulo cyclique, pas sur « effacer ».
+M.jeu.go(M.State.MENU);
+M.jeu.go(M.State.SETTINGS);
+h.frames(2);
+const nbReglages = 4;
+for (let i = 0; i < nbReglages; i++) { h.keyDown('KeyS'); h.frames(1); }
+M.storage.ajouterScoreCumule(999);
+h.keyDown('Enter'); h.frames(2);
+verifier('premier Entrée sur « effacer » demande confirmation, n\'efface pas',
+  M.storage.progress.totalScore > 0);
+h.keyDown('Enter'); h.frames(2);
+verifier('second Entrée confirme l\'effacement au clavier', M.storage.progress.totalScore === 0);
+
+h.keyDown('Escape'); h.frames(2);
+verifier('Échap revient au menu depuis les réglages', M.jeu.is(M.State.MENU));
+
 localStorage.clear();
 reset({ obstacles: false });
 
@@ -1112,6 +1191,32 @@ if (MB) {
   let maxB = 0;
   for (let i = 0; i < 160; i++) { hb.frame(); maxB = Math.max(maxB, solB - MB.player.y); if (MB.player.auSol && maxB > 5) break; }
   verifier('le bundle fait sauter le rider', maxB > 70, `${maxB.toFixed(0)} px`);
+}
+
+// ─── Avertissement stockage indisponible (§12) ───────────────────────────────
+// « En cas d'échec, basculer sur un store mémoire et afficher une fois » — pas
+// juste logger en console, qu'un joueur ne voit jamais. Il faut simuler la
+// panne AVANT le chargement de main.js, donc un boot() dédié.
+titre('Avertissement stockage indisponible (§12)');
+{
+  const hp = await boot({
+    width: 960, height: 540, dpr: 1, search: '?debug=1', localStorageEchoue: true,
+  });
+  const Mp = globalThis.window.__maxence;
+  verifier('storage bascule en mémoire quand localStorage échoue', Mp.storage.disponible === false);
+  hp.frames(2);
+
+  const px = (x, y) => {
+    const i = (y * hp.canvas.width + x) * 4;
+    return [hp.canvas.data[i], hp.canvas.data[i + 1], hp.canvas.data[i + 2]];
+  };
+  const [r, g, b] = px(Math.floor(hp.canvas.width / 2), 4);
+  verifier('un bandeau d\'avertissement orange est peint en haut de l\'écran',
+    r > 200 && g > 60 && g < 140 && b < 100, `rgb(${r},${g},${b})`);
+
+  hp.frame(5000); // au-delà des 4 s d'affichage
+  const [r2] = px(Math.floor(hp.canvas.width / 2), 4);
+  verifier('le bandeau disparaît après quelques secondes', r2 < 200, `r=${r2}`);
 }
 
 // ─── Persistance entre deux sessions (§16 : « survit à la fermeture ») ───────

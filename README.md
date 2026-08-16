@@ -24,9 +24,9 @@ Puis ouvrir <http://localhost:8000>. Le jeu fonctionne aussi en ouvrant
 | P3 | Chunks, obstacles, collisions, crash | ✅ |
 | P4 | Grind, manual, combos, scoring, particules | ✅ |
 | P5 | Décors, parallaxe 3 couches, caméra & ambiances | ✅ |
-| P6 | Menus, HUD, persistance | à venir |
-| P7 | Niveaux, endless, rider roller | à venir |
-| P8 | Audio, haptique, réglages, polish | à venir |
+| P6 | Menus, HUD, persistance | ✅ |
+| P7 | Rider roller débloqué à 25 000 pts · niveaux scriptés | partiel — voir écart ci-dessous |
+| P8 | Audio, haptique, réglages, polish | ✅ |
 
 ## Vérifier le jeu
 
@@ -110,6 +110,77 @@ bandes, blocs, mode de découpe, noms. Aucun réglage n'est en dur dans
 - `objects` — segmentation par composantes connexes sur toute la bande. Pour les
   décors, où plusieurs objets partagent une case et où les rails débordent sur
   trois cases.
+
+## Ajouter un chunk
+
+Les chunks vivent dans [src/data/chunks.js](src/data/chunks.js), groupés par
+palier de difficulté (`PALIER_1` à `PALIER_5`, plus `RESPIRATION` et `BONUS`).
+Un chunk se déclare avec le helper `chunk(id, difficulty, requires, entities)` :
+
+```js
+chunk('mon_chunk', 2, ['ollie', 'flip'], [
+  { type: 'bin', x: 220 },                 // obstacle (voir src/data/entities.js)
+  { type: 'coin', x: 190, y: 55 },          // collectible, y = hauteur au-dessus du sol
+]),
+```
+
+`x` va de 0 à 480 (largeur du chunk) ; pas besoin de laisser de la marge aux
+bords pour la sécurité entre chunks — `game/chunks.js` insère automatiquement
+l'espacement requis par l'invariant du §8 au moment d'accoler deux chunks entre
+eux (voir le commentaire d'en-tête de ce fichier pour le pourquoi). Ajouter le
+chunk au tableau `PALIER_N` correspondant suffit ; il rejoint le sac de tirage
+de ce palier. Les types d'obstacles et leurs familles de collision (§6.5) sont
+dans [src/data/entities.js](src/data/entities.js).
+
+Après modification : `node tools/test.mjs` revalide l'invariant sur toutes les
+paires de chunks à la vitesse plafond — c'est ce test qui protège contre un
+chunk dont les obstacles seraient placés d'une façon qui, combinée à un autre
+chunk, deviendrait infranchissable.
+
+## Ajouter un rider
+
+Les deux riders (skate, roller) sont déclarés dans
+[src/data/riders.js](src/data/riders.js) :
+
+```js
+export const RIDERS = {
+  nouveauRider: {
+    id: 'nouveauRider',
+    nom: 'Maxence (nouveau)',
+    prefixe: 'nouveau',          // doit matcher le préfixe des clés d'atlas :
+                                  // nouveau.roll.0, nouveau.ollie.0, etc.
+    special: 'manual',           // 'nocomply' ou 'manual' (§7)
+    vitesse: 1.00, hauteurSaut: 1.00, pointsTrick: 1.00, grind: 1.00,
+    debloqueA: 0,                 // score cumulé requis pour le débloquer (§7)
+  },
+};
+```
+
+Deux prérequis pour qu'un rider soit jouable :
+
+1. **Les animations existent dans l'atlas** sous le préfixe déclaré — la même
+   table que pour skate/roller (roll, ollie, flip, crash, grind, idle, plus
+   nocomply ou manual selon `special`). Sans planche source pour ce rider, il
+   n'y a rien à découper : voir [tools/layout.mjs](tools/layout.mjs) si de
+   nouvelles planches doivent entrer dans le pipeline.
+2. **Le menu propose le nouveau bouton** — `main.js` gère actuellement deux
+   boutons câblés en dur (skate/roller) ; un 3e rider demande d'étendre cette
+   UI (`ITEMS_MENU`, le rendu des boutons, la détection de clic).
+
+Le déblocage lui-même (`debloqueA`) est générique : `debloquerRidersEligibles()`
+dans `main.js` boucle sur `RIDERS` et compare `debloqueA` au score cumulé —
+rien à toucher côté logique de déblocage pour un rider de plus.
+
+## Écart assumé au brief : niveaux vs run continu
+
+Le §9 du brief demande 6 niveaux scriptés sélectionnables (nom, direction,
+longueur, 3 objectifs → étoiles) plus un mode Endless séparé avec seed
+affichée. Le jeu retient un design différent : un run continu unique où le
+décor et la difficulté changent de thème tous les 10 000 points, sans écran
+de sélection de niveau. Décision explicite, pas un oubli — le design plaisait
+déjà en l'état lors de l'arbitrage, et le restructurer aurait été un
+changement de portée conséquent (chunks, objectifs, étoiles, UI de sélection)
+pour un bénéfice pas évident face à ce qui fonctionne. À rouvrir si besoin.
 
 ## Packaging Android / PWA (hors brief)
 

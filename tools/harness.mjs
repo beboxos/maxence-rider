@@ -302,10 +302,13 @@ const magasinPartage = new Map();
  * Installe l'environnement puis charge le jeu.
  * @param {boolean} [resetStorage] si true, vide le localStorage simulé avant
  *   de démarrer — un nouveau visiteur plutôt qu'une session qui continue.
+ * @param {boolean} [localStorageEchoue] si true, getItem/setItem lèvent — la
+ *   navigation privée iOS que core/storage.js doit détecter et contourner.
  * @returns {Promise<object>} poignées de pilotage (temps, entrées, canvas)
  */
 export async function boot({
-  width = 960, height = 540, dpr = 1, search = '', bundle = false, resetStorage = true,
+  width = 960, height = 540, dpr = 1, search = '', bundle = false,
+  resetStorage = true, localStorageEchoue = false,
 } = {}) {
   if (resetStorage) magasinPartage.clear();
   const canvas = new Canvas(width, height);
@@ -356,12 +359,19 @@ export async function boot({
   // fallback mémoire dans tous les tests, et le comportement qu'il est censé
   // garantir — persister entre deux sessions — ne serait jamais vérifié,
   // seulement son absence de crash.
-  globalThis.localStorage = {
-    getItem: (k) => (magasinPartage.has(k) ? magasinPartage.get(k) : null),
-    setItem: (k, v) => { magasinPartage.set(k, String(v)); },
-    removeItem: (k) => { magasinPartage.delete(k); },
-    clear: () => magasinPartage.clear(),
-  };
+  globalThis.localStorage = localStorageEchoue
+    ? {
+        getItem() { throw new Error('QuotaExceededError'); },
+        setItem() { throw new Error('QuotaExceededError'); },
+        removeItem() {},
+        clear() {},
+      }
+    : {
+        getItem: (k) => (magasinPartage.has(k) ? magasinPartage.get(k) : null),
+        setItem: (k, v) => { magasinPartage.set(k, String(v)); },
+        removeItem: (k) => { magasinPartage.delete(k); },
+        clear: () => magasinPartage.clear(),
+      };
 
   // navigator.vibrate : espionné plutôt que simplement absent, pour que les
   // tests puissent vérifier QUE l'haptique se déclenche (§11), pas seulement

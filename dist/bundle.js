@@ -100,6 +100,13 @@ const Action = {
   RESTART: 'RESTART',
   CONFIRM: 'CONFIRM',
   TOGGLE_MUTE: 'TOGGLE_MUTE',
+
+  // §16 : toutes les actions accessibles au clavier — menus et réglages
+  // compris, pas seulement le jeu. Distinctes de CROUCH_MANUAL/LEAN_* : ces
+  // dernières ne servent qu'en jeu, jamais en menu, donc pas de conflit à
+  // partager ArrowUp/ArrowDown, mais un nom séparé garde chaque contexte lisible.
+  MENU_UP: 'MENU_UP',
+  MENU_DOWN: 'MENU_DOWN',
 };
 
 // Un appui bref est un ollie, un appui tenu un flip. Le seuil doit être franchi
@@ -179,6 +186,11 @@ function createInput(target, { onPause } = {}) {
       case 'ArrowDown': case 'KeyS':
         e.preventDefault();
         held[Action.CROUCH_MANUAL] = true;
+        press(Action.MENU_DOWN);
+        break;
+      case 'ArrowUp': case 'KeyW':
+        e.preventDefault();
+        press(Action.MENU_UP);
         break;
       case 'ArrowLeft': case 'KeyA': held[Action.LEAN_BACK] = true; break;
       case 'ArrowRight': case 'KeyD': held[Action.LEAN_FWD] = true; break;
@@ -5810,7 +5822,7 @@ const { dessinerCurb2D, dessinerRampe2D, dessinerCone2D } = __mod["src/render/ob
 const { THEMES, getTheme } = __mod["src/data/themes.js"];
 const { Family, ENTITIES } = __mod["src/data/entities.js"];
 
-const { getRider } = __mod["src/data/riders.js"];
+const { getRider, RIDERS } = __mod["src/data/riders.js"];
 
 const DEBUG = new URLSearchParams(location.search).has('debug');
 
@@ -5835,9 +5847,17 @@ const audio = createAudio();
 const storage = createStorage();
 const monde = { defilement: 0, prevDefilement: 0 };
 
-// §7 : le rider roller se débloque à 25 000 points cumulés sur tous les runs
-// (progress.totalScore), pas le score d'un seul run.
-const SEUIL_DEBLOCAGE_ROLLER = 25000;
+// §7 : chaque rider a son propre seuil de déblocage dans RIDERS[id].debloqueA
+// (progress.totalScore cumulé sur tous les runs, pas le score d'un seul run).
+// Lu depuis riders.js plutôt que dupliqué ici, pour qu'ajouter un 3e rider se
+// limite à ce fichier — voir "Ajouter un rider" dans le README.
+function debloquerRidersEligibles() {
+  for (const rider of Object.values(RIDERS)) {
+    if (!storage.riderDebloque(rider.id) && storage.progress.totalScore >= rider.debloqueA) {
+      storage.debloquerRider(rider.id);
+    }
+  }
+}
 
 let dernierSautAudio = null;
 let dernierComboAudio = 1;
@@ -6373,9 +6393,7 @@ function enregistrerFinDeRun(score, distM) {
   });
   storage.enregistrerStats({ crash: true, combo: scoring.etat.meilleurCombo, distance: distM });
   storage.ajouterScoreCumule(score);
-  if (!storage.riderDebloque('roller') && storage.progress.totalScore >= SEUIL_DEBLOCAGE_ROLLER) {
-    storage.debloquerRider('roller');
-  }
+  debloquerRidersEligibles();
   return etaitRecord;
 }
 
@@ -6383,6 +6401,28 @@ let selectedRider = (storage.settings.rider === 'roller' && storage.riderDebloqu
   ? 'roller' : 'skate';
 let nouveauRecordPartie = false;
 let confirmationEffacement = false;
+
+// §16 : toute action doit être accessible au clavier, pas seulement à la
+// souris/au tactile — les « boutons » du menu et des réglages sont dessinés
+// dans le canvas, pas de vrais éléments DOM focusables, donc la navigation et
+// la surbrillance du focus sont ré-implémentées ici plutôt qu'héritées du
+// navigateur.
+const ITEMS_MENU = ['skate', 'roller', 'commencer', 'scores', 'reglages'];
+let curseurMenu = 2; // démarre sur COMMENCER : Entrée directe = jouer, comme avant
+let curseurReglages = 0;
+
+function activerItemMenu(item) {
+  if (item === 'skate') { selectedRider = 'skate'; storage.setSetting('rider', 'skate'); audio.ensureResumed(); audio.sfx.coin(); return; }
+  if (item === 'roller') {
+    audio.ensureResumed();
+    if (storage.riderDebloque('roller')) { selectedRider = 'roller'; storage.setSetting('rider', 'roller'); audio.sfx.coin(); }
+    else audio.sfx.crash();
+    return;
+  }
+  if (item === 'commencer') { lancerPartie(); return; }
+  if (item === 'scores') { audio.ensureResumed(); jeu.go(State.SCORES); return; }
+  if (item === 'reglages') { audio.ensureResumed(); jeu.go(State.SETTINGS); return; }
+}
 
 function lancerPartie() {
   demarrerRun(nouvelleSeed(), { rider: selectedRider });
@@ -6419,8 +6459,14 @@ const jeu = createStateMachine(State.BOOT, {
     update: (dt) => {
       input.update();
       monde.defilement += 50 * dt;
+      if (input.consume(Action.MENU_DOWN)) {
+        curseurMenu = (curseurMenu + 1) % ITEMS_MENU.length;
+      }
+      if (input.consume(Action.MENU_UP)) {
+        curseurMenu = (curseurMenu - 1 + ITEMS_MENU.length) % ITEMS_MENU.length;
+      }
       if (input.consume(Action.CONFIRM)) {
-        lancerPartie();
+        activerItemMenu(ITEMS_MENU[curseurMenu]);
       }
     },
     render: () => {
@@ -6527,7 +6573,7 @@ const jeu = createStateMachine(State.BOOT, {
       } else {
         ctx.fillText('🔒 ROLLER', rx2 + rw / 2, ry + rh / 2 - 5);
         ctx.font = '6px ui-monospace, monospace';
-        const manque = Math.max(0, SEUIL_DEBLOCAGE_ROLLER - storage.progress.totalScore);
+        const manque = Math.max(0, RIDERS.roller.debloqueA - storage.progress.totalScore);
         ctx.fillText(`${manque} pts restants`, rx2 + rw / 2, ry + rh / 2 + 7);
       }
 
@@ -6559,6 +6605,20 @@ const jeu = createStateMachine(State.BOOT, {
       ctx.font = '7px ui-monospace, monospace';
       ctx.fillText('🏆 SCORES', sx1 + sw / 2, sy + sh / 2);
       ctx.fillText('⚙ RÉGLAGES', sx2 + sw / 2, sy + sh / 2);
+
+      // §16 : focus clavier visible — ces boutons sont dessinés dans le canvas,
+      // pas de vrais éléments DOM, donc pas de :focus-visible natif à hériter.
+      const zonesMenu = {
+        skate: [rx1 - 2, ry - 2, rw + 4, rh + 4],
+        roller: [rx2 - 2, ry - 2, rw + 4, rh + 4],
+        commencer: [bx - 2, by - 2, bw + 4, bh + 4],
+        scores: [sx1 - 2, sy - 2, sw + 4, sh + 4],
+        reglages: [sx2 - 2, sy - 2, sw + 4, sh + 4],
+      };
+      const [fx, fy, fw, fh] = zonesMenu[ITEMS_MENU[curseurMenu]];
+      ctx.strokeStyle = '#ffc93c';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(fx + 1, fy + 1, fw - 2, fh - 2);
 
       // Contrôles
       ctx.fillStyle = '#8a8d9e';
@@ -6610,7 +6670,7 @@ const jeu = createStateMachine(State.BOOT, {
       if (nouveauRecordPartie) {
         texteCentre('🏆 NOUVEAU RECORD !', view.h / 2 - 36, '#ffc93c');
       }
-      texteCentre('GAME OVER', view.h / 2 - 20, '#ff5c3a');
+      texteCentre('PARTIE TERMINÉE', view.h / 2 - 20, '#ff5c3a');
 
       const distM = Math.floor(player.distance / 10);
       const scoreTotal = scoring.scoreTotal(distM);
@@ -6688,10 +6748,26 @@ const jeu = createStateMachine(State.BOOT, {
     },
   },
   [State.SETTINGS]: {
-    enter: () => { input.clear(); confirmationEffacement = false; },
+    enter: () => { input.clear(); confirmationEffacement = false; curseurReglages = 0; },
     update: () => {
       input.update();
-      if (input.consume(Action.PAUSE)) jeu.go(State.MENU);
+      if (input.consume(Action.PAUSE)) { jeu.go(State.MENU); return; }
+      const total = optionsReglages().length + 1; // + « Effacer mes données »
+      if (input.consume(Action.MENU_DOWN)) curseurReglages = (curseurReglages + 1) % total;
+      if (input.consume(Action.MENU_UP)) curseurReglages = (curseurReglages - 1 + total) % total;
+      if (input.consume(Action.CONFIRM)) {
+        const items = optionsReglages();
+        if (curseurReglages < items.length) {
+          basculerReglage(items[curseurReglages].cle);
+        } else if (confirmationEffacement) {
+          storage.effacerTout();
+          confirmationEffacement = false;
+          audio.sfx.crash();
+        } else {
+          confirmationEffacement = true;
+          audio.sfx.coin();
+        }
+      }
     },
     render: () => {
       ctx.fillStyle = '#12131a';
@@ -6711,6 +6787,13 @@ const jeu = createStateMachine(State.BOOT, {
         ctx.fillStyle = it.actif ? '#4ed4c4' : '#4a4d5e';
         ctx.font = 'bold 8px ui-monospace, monospace';
         ctx.fillText(it.actif ? 'ACTIVÉ' : 'COUPÉ', view.w - 24, y);
+
+        // §16 : focus clavier visible, ré-implémenté (canvas, pas de DOM ici).
+        if (curseurReglages === i) {
+          ctx.strokeStyle = '#ffc93c';
+          ctx.lineWidth = 2;
+          ctx.strokeRect(12, y - 9, view.w - 24, 18);
+        }
       });
 
       const yEffacer = 46 + items.length * 22 + 10;
@@ -6721,8 +6804,13 @@ const jeu = createStateMachine(State.BOOT, {
         confirmationEffacement ? 'SÛR ? TOUCHER ENCORE POUR CONFIRMER' : '🗑 EFFACER MES DONNÉES',
         view.w / 2, yEffacer,
       );
+      if (curseurReglages === items.length) {
+        ctx.strokeStyle = '#ffc93c';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(view.w / 2 - 100, yEffacer - 9, 200, 18);
+      }
 
-      texteCentre('ÉCHAP : RETOUR', view.h - 14, '#8a8d9e');
+      texteCentre('↑↓ NAVIGUER · ENTRÉE VALIDER · ÉCHAP : RETOUR', view.h - 14, '#8a8d9e');
     },
   },
 });
@@ -6783,31 +6871,25 @@ canvas.addEventListener('click', (e) => {
     const rx1 = Math.round(rightX - rw - 8);
     const rx2 = Math.round(rightX + 8);
 
+    // Un clic garde le curseur clavier synchronisé : après un clic sur
+    // SCORES puis retour au menu, Entrée doit rejouer ce même item, pas
+    // celui qu'on avait sélectionné au clavier avant.
+    const clicItem = (item) => { curseurMenu = ITEMS_MENU.indexOf(item); activerItemMenu(item); };
+
     // Clic / Touch sur Bouton Skate
     if (cx >= rx1 - 15 && cx <= rx1 + rw + 8 && cy >= ry - 8 && cy <= ry + rh + 8) {
-      selectedRider = 'skate';
-      storage.setSetting('rider', 'skate');
-      audio.ensureResumed();
-      audio.sfx.coin();
+      clicItem('skate');
       return;
     }
     // Clic / Touch sur Bouton Roller — verrouillé tant que non débloqué (§7).
     if (cx >= rx2 - 8 && cx <= rx2 + rw + 15 && cy >= ry - 8 && cy <= ry + rh + 8) {
-      if (storage.riderDebloque('roller')) {
-        selectedRider = 'roller';
-        storage.setSetting('rider', 'roller');
-        audio.ensureResumed();
-        audio.sfx.coin();
-      } else {
-        audio.ensureResumed();
-        audio.sfx.crash(); // retour sonore distinct : verrouillé, pas sélectionné
-      }
+      clicItem('roller');
       return;
     }
     // Clic / Touch sur COMMENCER
     const bw = 216, bh = 32, by = 126;
     if (cx >= rightX - bw / 2 - 14 && cx <= rightX + bw / 2 + 14 && cy >= by - 6 && cy <= by + bh + 4) {
-      lancerPartie();
+      clicItem('commencer');
       return;
     }
     // Boutons secondaires SCORES / RÉGLAGES, juste sous COMMENCER.
@@ -6815,17 +6897,15 @@ canvas.addEventListener('click', (e) => {
     const sx1 = Math.round(rightX - sw - 4);
     const sx2 = Math.round(rightX + 4);
     if (cx >= sx1 && cx <= sx1 + sw && cy >= sy && cy <= sy + sh) {
-      audio.ensureResumed();
-      jeu.go(State.SCORES);
+      clicItem('scores');
       return;
     }
     if (cx >= sx2 && cx <= sx2 + sw && cy >= sy && cy <= sy + sh) {
-      audio.ensureResumed();
-      jeu.go(State.SETTINGS);
+      clicItem('reglages');
       return;
     }
     if (cy > sy + sh + 10) {
-      lancerPartie();
+      clicItem('commencer');
     }
   } else if (jeu.is(State.SCORES)) {
     jeu.go(State.MENU);
@@ -6834,11 +6914,12 @@ canvas.addEventListener('click', (e) => {
     let clique = false;
     items.forEach((it, i) => {
       const y = 46 + i * 22;
-      if (cy >= y - 10 && cy <= y + 10) { basculerReglage(it.cle); clique = true; }
+      if (cy >= y - 10 && cy <= y + 10) { curseurReglages = i; basculerReglage(it.cle); clique = true; }
     });
     if (!clique) {
       const yEffacer = 46 + items.length * 22 + 10;
       if (cy >= yEffacer - 10 && cy <= yEffacer + 10) {
+        curseurReglages = items.length;
         if (confirmationEffacement) {
           storage.effacerTout();
           confirmationEffacement = false;
@@ -6891,11 +6972,33 @@ document.addEventListener('visibilitychange', () => {
 
 // ── Boucle ───────────────────────────────────────────────────────────────────
 
+// §12 : « en cas d'échec, basculer sur un store mémoire et afficher une fois »
+// — storage.js gère déjà le fallback et logge en console, mais un console.warn
+// n'est jamais vu par le joueur. Affiché ici, par-dessus n'importe quel écran,
+// pendant les premières secondes plutôt que dans un bandeau de trick de 700 ms
+// (§6.6) — un avertissement système mérite d'être lisible plus longtemps.
+const DUREE_AVERTISSEMENT_STORAGE = 4;
+const avertissementStorageJusque = storage.disponible
+  ? 0
+  : performance.now() / 1000 + DUREE_AVERTISSEMENT_STORAGE;
+
+function dessinerAvertissementStorage() {
+  if (performance.now() / 1000 >= avertissementStorageJusque) return;
+  ctx.fillStyle = 'rgba(255, 92, 58, 0.92)';
+  ctx.fillRect(0, 0, view.w, 16);
+  ctx.fillStyle = '#12131a';
+  ctx.font = 'bold 7px ui-monospace, monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('⚠ Les scores ne seront pas conservés sur cet appareil.', view.w / 2, 8);
+}
+
 const boucle = createLoop({
   update: (dt) => jeu.update(dt),
   render: (alpha) => {
     renderer.begin();
     jeu.render(alpha);
+    dessinerAvertissementStorage();
     if (DEBUG) dessinerDebug();
     renderer.end();
   },
