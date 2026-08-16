@@ -196,11 +196,13 @@ class Context2D {
     for (let py = y0; py < y1; py++) {
       let v = (py + 0.5 - Math.min(p0.y, p1.y)) / (y1 - y0);
       if (flipY) v = 1 - v;
-      const srcY = Math.min(sh - 1, Math.max(0, Math.floor(sy + v * sh)));
+      // Le clamp porte sur la sous-image source, origine comprise : borner à
+      // sh-1 ramènerait l'échantillonnage au coin haut-gauche de l'atlas.
+      const srcY = Math.min(sy + sh - 1, Math.max(sy, Math.floor(sy + v * sh)));
       for (let px = x0; px < x1; px++) {
         let u = (px + 0.5 - Math.min(p0.x, p1.x)) / (x1 - x0);
         if (flipX) u = 1 - u;
-        const srcX = Math.min(sw - 1, Math.max(0, Math.floor(sx + u * sw)));
+        const srcX = Math.min(sx + sw - 1, Math.max(sx, Math.floor(sx + u * sw)));
         const i = (srcY * img.width + srcX) * 4;
         const a = (img.data[i + 3] / 255) * ga;
         if (a <= 0) continue;
@@ -283,13 +285,15 @@ class Element {
  * Installe l'environnement puis charge le jeu.
  * @returns {Promise<object>} poignées de pilotage (temps, entrées, canvas)
  */
-export async function boot({ width = 960, height = 540, dpr = 1, search = '' } = {}) {
+export async function boot({ width = 960, height = 540, dpr = 1, search = '', bundle = false } = {}) {
   const canvas = new Canvas(width, height);
+  const panne = new Element('panne');
+  panne.hidden = true; // fidèle au HTML : <p id="panne" hidden>
   const elements = new Map([
     ['jeu', canvas],
     ['pause', new Element('pause')],
     ['chargement', new Element('chargement')],
-    ['panne', new Element('panne')],
+    ['panne', panne],
   ]);
 
   let virtualTime = 0;
@@ -340,7 +344,17 @@ export async function boot({ width = 960, height = 540, dpr = 1, search = '' } =
     }
   };
 
-  const modules = await import(`../src/main.js?t=${Date.now()}`);
+  let modules = null;
+  if (bundle) {
+    // Exactement ce que charge une ouverture en file:// : le script concaténé,
+    // pas les modules. C'est le seul moyen d'attraper une erreur propre au
+    // bundle — un export mal extrait, par exemple — avant l'utilisateur.
+    const code = readFileSync(join(ROOT, 'dist/bundle.js'), 'utf8');
+    // eslint-disable-next-line no-new-func
+    new Function(code)();
+  } else {
+    modules = await import(`../src/main.js?t=${Date.now()}`);
+  }
   // Laisse la promesse de chargement des assets se résoudre.
   await new Promise((r) => setTimeout(r, 0));
 

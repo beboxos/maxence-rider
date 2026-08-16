@@ -4,7 +4,9 @@ import { createLoop } from './core/loop.js';
 import { createInput, Action } from './core/input.js';
 import { loadAssets, atlas } from './core/assets.js';
 import { createRenderer } from './render/renderer.js';
+import { drawFrame } from './render/sprite.js';
 import { createStateMachine, State } from './game/state.js';
+import { createPlayer, RiderState } from './game/player.js';
 
 const DEBUG = new URLSearchParams(location.search).has('debug');
 
@@ -16,128 +18,63 @@ const panne = document.getElementById('panne');
 const renderer = createRenderer(canvas);
 const { ctx, view } = renderer;
 
-// ── Bac à sable P1 ───────────────────────────────────────────────────────────
-// Un carré rouge qui court et saute : de quoi valider la boucle, les entrées et
-// la mise à l'échelle avant d'y brancher le vrai rider (P2).
+const SOL = 40; // hauteur du sol depuis le bas de l'espace virtuel
 
-const GRAVITE = 2200;
-// Le boost monte sous gravité réduite (§6.3) : c'est ce qui lui donne son
-// airtime long, pas une vitesse initiale plus forte. À gravité pleine il
-// plafonnerait à 111 px, sous les 175 px attendus.
-const GRAVITE_BOOST = 1400;
-const CHUTE_MAX = 1400;
-// Le premier tap d'un double tap part forcément en ollie : attendre la fenêtre
-// de double tap pour trancher ajouterait 250 ms de latence à chaque saut. On
-// laisse donc partir l'ollie et le second tap convertit le saut à peine amorcé.
-const FENETRE_CONVERSION = 0.14;
-const HAUTEUR_BOOST = (700 * 700) / (2 * 1400); // 175 px, §6.3
-const SOL = 40; // hauteur du sol depuis le bas de l'écran
+const player = createPlayer({ rider: 'skate', direction: 1 });
+const monde = { defilement: 0 };
 
-const carre = {
-  x: 0, y: 0, vy: 0,
-  taille: 16,
-  auSol: true,
-  graviteMontee: GRAVITE,
-  tempsVol: 0,
-  // Position au pas précédent, pour interpoler au rendu.
-  prevX: 0, prevY: 0,
-};
-
-const monde = { defilement: 0, vitesse: 240 };
+function solY() {
+  return view.h - SOL;
+}
 
 function reinitialiser() {
-  carre.x = view.w * 0.3;
-  carre.y = view.h - SOL;
-  carre.vy = 0;
-  carre.auSol = true;
-  carre.prevX = carre.x;
-  carre.prevY = carre.y;
+  player.poser(Math.round(view.w * 0.3), solY());
+  player.tempsCourse = 0;
+  player.distance = 0;
   monde.defilement = 0;
-}
-
-/** Recale le saut en cours pour qu'il culmine à `cible` px au-dessus du sol. */
-function convertirVers(cible, graviteMontee) {
-  const hauteurActuelle = (view.h - SOL) - carre.y;
-  const restant = Math.max(0, cible - hauteurActuelle);
-  carre.vy = -Math.sqrt(2 * graviteMontee * restant);
-  carre.graviteMontee = graviteMontee;
-}
-
-function sauter(vitesse, graviteMontee = GRAVITE) {
-  carre.vy = vitesse;
-  carre.auSol = false;
-  carre.graviteMontee = graviteMontee;
-  carre.tempsVol = 0;
 }
 
 function majJeu(dt) {
   input.update();
+  player.update(dt, { input, solY: solY() });
 
-  carre.prevX = carre.x;
-  carre.prevY = carre.y;
+  // §6.2 : le rider avance tout seul ; c'est le monde qui défile sous lui.
+  monde.defilement += player.vitesse * player.direction * dt;
+  player.x = Math.round(view.w * 0.3);
+  player.prevX = player.x;
 
-  // §6.2 : la vitesse se module de ±15 % par inclinaison.
-  let facteur = 1;
-  if (input.isDown(Action.LEAN_FWD)) facteur = 1.15;
-  else if (input.isDown(Action.LEAN_BACK)) facteur = 0.85;
-  monde.defilement += monde.vitesse * facteur * dt;
-
-  // §6.3 : trois sauts, trois courbes distinctes.
-  if (carre.auSol) {
-    if (input.consume(Action.JUMP_LONG)) sauter(-700, GRAVITE_BOOST);
-    else if (input.consume(Action.JUMP_HIGH)) sauter(-820);
-    else if (input.consume(Action.JUMP_SHORT)) sauter(-620);
-  } else if (carre.tempsVol < FENETRE_CONVERSION && carre.vy < 0
-             && input.consume(Action.JUMP_LONG)) {
-    // Conversion, pas double saut : c'est le même geste qui se termine. On vise
-    // le sommet du boost au lieu d'ajouter sa vitesse à celle déjà acquise —
-    // sinon le saut converti monterait plus haut qu'un boost franc.
-    convertirVers(HAUTEUR_BOOST, GRAVITE_BOOST);
-  }
-
-  if (!carre.auSol) {
-    carre.tempsVol += dt;
-    const g = carre.vy < 0 ? carre.graviteMontee : GRAVITE;
-    carre.vy = Math.min(carre.vy + g * dt, CHUTE_MAX);
-    carre.y += carre.vy * dt;
-    const sol = view.h - SOL;
-    if (carre.y >= sol) {
-      carre.y = sol;
-      carre.vy = 0;
-      carre.auSol = true;
-      carre.tempsVol = 0;
-    }
-  }
-
-  // Le rider reste à 30 % de l'écran dans le sens de la marche (§6.2).
-  carre.x = Math.round(view.w * 0.3);
+  if (input.consume(Action.RESTART)) reinitialiser();
 }
 
 function dessinerJeu(alpha) {
-  const x = carre.prevX + (carre.x - carre.prevX) * alpha;
-  const y = carre.prevY + (carre.y - carre.prevY) * alpha;
-  const solY = view.h - SOL;
+  const y = player.prevY + (player.y - player.prevY) * alpha;
+  const sol = solY();
 
-  // Ciel
   ctx.fillStyle = '#1b1d27';
   ctx.fillRect(0, 0, view.w, view.h);
 
-  // Sol, avec des dalles qui défilent : sans repère mobile, impossible de voir
-  // si le jeu avance à la bonne vitesse.
+  // Sol provisoire : les vraies tuiles et le décor arrivent en P3/P5.
   ctx.fillStyle = '#2a2c3a';
-  ctx.fillRect(0, solY, view.w, view.h - solY);
+  ctx.fillRect(0, sol, view.w, view.h - sol);
   ctx.fillStyle = '#3a3d4e';
   const pas = 32;
-  const decalage = monde.defilement % pas;
+  const decalage = ((monde.defilement % pas) + pas) % pas;
   for (let sx = -decalage; sx < view.w; sx += pas) {
-    ctx.fillRect(Math.round(sx), solY, 1, view.h - solY);
+    ctx.fillRect(Math.round(sx), sol, 1, view.h - sol);
   }
   ctx.fillStyle = '#4ed4c4';
-  ctx.fillRect(0, solY, view.w, 1);
+  ctx.fillRect(0, sol, view.w, 1);
 
-  // Le carré rouge de la phase 1.
-  ctx.fillStyle = '#ff5c3a';
-  ctx.fillRect(Math.round(x - carre.taille / 2), Math.round(y - carre.taille), carre.taille, carre.taille);
+  drawFrame(ctx, player.frameKey(), player.x, y, {
+    flip: player.direction < 0,
+    scaleY: player.squash,
+  });
+
+  if (DEBUG) {
+    ctx.fillStyle = 'rgba(255,201,60,0.9)';
+    ctx.fillRect(player.x - 3, Math.round(y), 7, 1);
+    ctx.fillRect(player.x, Math.round(y) - 3, 1, 7);
+  }
 }
 
 // ── Écrans ───────────────────────────────────────────────────────────────────
@@ -180,24 +117,24 @@ const input = createInput(canvas, { onPause: basculerPause });
 boutonPause.addEventListener('click', basculerPause);
 
 // ── Orientation et redimensionnement ─────────────────────────────────────────
-// C3 : relayout à chaud, sans rechargement ni perte d'état. Les entités sont
-// repositionnées proportionnellement dans le nouvel espace virtuel.
+// C3 : relayout à chaud, sans rechargement ni perte d'état.
 
 function surRedimensionnement() {
-  const ancien = { w: view.w, h: view.h };
+  const ancienSol = solY();
   renderer.resize();
-  if (view.w !== ancien.w || view.h !== ancien.h) {
-    const ratioY = (view.h - SOL) / (ancien.h - SOL);
-    carre.y *= ratioY;
-    carre.prevY *= ratioY;
-    carre.x = Math.round(view.w * 0.3);
-    carre.prevX = carre.x;
+  const nouveauSol = solY();
+  if (nouveauSol !== ancienSol) {
+    // On conserve la hauteur au-dessus du sol, pas la coordonnée absolue :
+    // un rider en plein saut ne doit ni se téléporter au sol ni sortir de l'écran.
+    const hauteur = ancienSol - player.y;
+    player.y = nouveauSol - hauteur;
+    player.prevY = player.y;
   }
+  player.x = player.prevX = Math.round(view.w * 0.3);
 }
 
 window.addEventListener('resize', surRedimensionnement);
 window.addEventListener('orientationchange', surRedimensionnement);
-// iOS ne déclenche pas toujours resize quand les barres système se replient.
 window.visualViewport?.addEventListener('resize', surRedimensionnement);
 
 document.addEventListener('visibilitychange', () => {
@@ -218,26 +155,28 @@ const boucle = createLoop({
 
 function dessinerDebug() {
   const lignes = [
-    `${boucle.stats.fps} fps · ${boucle.stats.updates} maj/frame`,
-    `${view.w}×${view.h} ×${view.scale} dpr ${view.dpr}`,
-    view.portrait ? 'portrait' : 'paysage',
-    `frames atlas : ${Object.keys(atlas.frames).length}`,
-  ];
+    `${boucle.stats.fps} fps · ${boucle.stats.updates} maj`,
+    `${view.w}x${view.h} x${view.scale} ${view.portrait ? 'portrait' : 'paysage'}`,
+    `${player.state} ${player.frameKey()}`,
+    `v ${player.vitesse.toFixed(0)} px/s · ${(player.distance / 10).toFixed(0)} m`,
+    player.state === RiderState.AIR ? `vol ${player.tempsVol.toFixed(2)}s` : '',
+  ].filter(Boolean);
   ctx.font = '6px ui-monospace, monospace';
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
   ctx.fillStyle = 'rgba(18,19,26,0.7)';
-  ctx.fillRect(2, 2, 96, lignes.length * 8 + 4);
+  ctx.fillRect(2, 2, 120, lignes.length * 8 + 4);
   ctx.fillStyle = '#ffc93c';
   lignes.forEach((l, i) => ctx.fillText(l, 5, 6 + i * 8));
 }
 
 // ── Démarrage ────────────────────────────────────────────────────────────────
 
-// En mode debug seulement : donne prise sur l'état interne, pour l'inspection
-// en console et pour les tests automatisés.
 if (DEBUG) {
-  window.__maxence = { carre, monde, view, jeu, boucle, input, Action, State };
+  window.__maxence = {
+    player, monde, view, jeu, boucle, input, atlas,
+    Action, State, RiderState, solY,
+  };
 }
 
 loadAssets()

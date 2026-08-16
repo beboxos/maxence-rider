@@ -92,6 +92,8 @@ const Action = {
   JUMP_HIGH: 'JUMP_HIGH',       // flip
   JUMP_LONG: 'JUMP_LONG',       // boost
   CROUCH_MANUAL: 'CROUCH_MANUAL',
+  JUMP_HOLD: 'JUMP_HOLD',       // le geste de saut est encore en cours
+
   LEAN_FWD: 'LEAN_FWD',
   LEAN_BACK: 'LEAN_BACK',
   PAUSE: 'PAUSE',
@@ -132,6 +134,7 @@ function createInput(target, { onPause } = {}) {
     g.start = now();
     g.longFired = false;
     g.skipRelease = false;
+    held[Action.JUMP_HOLD] = true;
 
     if (boost || now() - lastReleaseAt <= DOUBLE_TAP_WINDOW) {
       press(Action.JUMP_LONG);
@@ -160,6 +163,7 @@ function createInput(target, { onPause } = {}) {
     g.longFired = false;
     if (!keyGesture.active && !touchGesture.active) {
       held[Action.CROUCH_MANUAL] = false;
+      held[Action.JUMP_HOLD] = false;
     }
   }
 
@@ -2925,6 +2929,69 @@ function createRenderer(canvas) {
 
 return { LANDSCAPE, PORTRAIT, createRenderer };
 })();
+__mod["src/render/sprite.js"] = (function () {
+// Dessin des frames de l'atlas.
+//
+// Chaque frame porte un offset par rapport à son ancre — le milieu-bas de la
+// case d'origine, c'est-à-dire les pieds du rider. C'est ce qui permet de dessiner
+// n'importe quelle frame en donnant simplement la position au sol : les frames
+// aériennes gardent leur hauteur au lieu de retomber sur le sol.
+
+const { frame, sheetImage } = __mod["src/core/assets.js"];
+
+/**
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {string} key      clé de frame dans l'atlas
+ * @param {number} x        position de l'ancre, espace virtuel
+ * @param {number} y        position de l'ancre (le sol), espace virtuel
+ * @param {object} [opts]
+ * @param {boolean} [opts.flip]    miroir horizontal (§3 : on ne stocke que la droite)
+ * @param {number} [opts.alpha]
+ * @param {number} [opts.scaleY]   écrasement vertical, pour le squash d'atterrissage
+ */
+function drawFrame(ctx, key, x, y, opts = {}) {
+  const f = frame(key);
+  const img = sheetImage();
+  if (!f || !img) { drawMissing(ctx, x, y); return; }
+
+  const { flip = false, alpha = 1, scaleY = 1 } = opts;
+  const [rx, ry, rw, rh] = f.rect;
+  const [ox, oy] = f.offset;
+
+  // Cas courant : ni miroir, ni squash, ni transparence — un seul drawImage.
+  if (!flip && scaleY === 1 && alpha === 1) {
+    ctx.drawImage(img, rx, ry, rw, rh, Math.round(x) + ox, Math.round(y) + oy, rw, rh);
+    return;
+  }
+
+  ctx.save();
+  if (alpha !== 1) ctx.globalAlpha = alpha;
+  ctx.translate(Math.round(x), Math.round(y));
+  // Le miroir et le squash partent tous deux de l'ancre : le rider reste centré
+  // sur ses pieds, qui restent collés au sol.
+  ctx.scale(flip ? -1 : 1, scaleY);
+  ctx.drawImage(img, rx, ry, rw, rh, flip ? -ox - rw : ox, oy, rw, rh);
+  ctx.restore();
+}
+
+/** Placeholder d'asset manquant : magenta barré, impossible à confondre (C6). */
+function drawMissing(ctx, x, y, w = 16, h = 16) {
+  ctx.save();
+  ctx.fillStyle = '#ff00ff';
+  ctx.fillRect(Math.round(x - w / 2), Math.round(y - h), w, h);
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(x - w / 2, y - h);
+  ctx.lineTo(x + w / 2, y);
+  ctx.moveTo(x + w / 2, y - h);
+  ctx.lineTo(x - w / 2, y);
+  ctx.stroke();
+  ctx.restore();
+}
+
+return { drawFrame, drawMissing };
+})();
 __mod["src/game/state.js"] = (function () {
 // Machine à états des écrans.
 //
@@ -2974,6 +3041,415 @@ function createStateMachine(initial, handlers = {}) {
 
 return { State, createStateMachine };
 })();
+__mod["src/data/riders.js"] = (function () {
+// Caractéristiques des deux riders (§7).
+//
+// Les deux partagent la même machine à états : seuls les coefficients et la
+// table d'animations changent. Ajouter un rider revient à ajouter une entrée ici
+// et les animations correspondantes dans l'atlas.
+
+const RIDERS = {
+  skate: {
+    id: 'skate',
+    nom: 'Maxence (skate)',
+    prefixe: 'skate',
+    special: 'nocomply',        // saut long
+    vitesse: 1.00,
+    hauteurSaut: 1.00,
+    pointsTrick: 1.00,
+    grind: 1.00,
+    debloqueA: 0,
+  },
+  roller: {
+    id: 'roller',
+    nom: 'Maxence (roller)',
+    prefixe: 'roller',
+    special: 'manual',          // maintien de combo
+    vitesse: 1.10,
+    hauteurSaut: 0.92,
+    pointsTrick: 0.85,
+    grind: 1.25,
+    debloqueA: 25000,
+  },
+};
+
+const RIDER_PAR_DEFAUT = 'skate';
+
+function getRider(id) {
+  return RIDERS[id] || RIDERS[RIDER_PAR_DEFAUT];
+}
+
+return { RIDERS, RIDER_PAR_DEFAUT, getRider };
+})();
+__mod["src/data/anims.js"] = (function () {
+// Table des animations du rider (§5).
+//
+// L'atlas fournit déjà les frames et un fps ; ce fichier ajoute la couche
+// gameplay : le découpage d'une animation de saut en phases.
+//
+// Pourquoi ce découpage. Une anim d'ollie fait 5 frames à 18 fps, soit 0,28 s,
+// alors que le saut dure 0,56 s — et bien davantage pour un boost. Jouer
+// l'animation « au chronomètre » la ferait finir en plein vol, rider figé sur
+// une pose d'atterrissage à un mètre du sol. On la pilote donc par la phase du
+// saut : le pop se joue une fois au décollage, l'air boucle tant que le rider
+// est en l'air, la réception se joue au contact. L'animation reste ainsi
+// synchrone avec la physique quelle que soit la hauteur du saut.
+
+const PHASES = {
+  ollie: { pop: [0, 1], air: [2, 3], land: [4] },
+  flip: { pop: [0, 1, 2], air: [3, 4, 5], land: [6] },
+  nocomply: { pop: [0, 1], air: [2, 3, 4], land: [5] },
+  manual: { pop: [0, 1], air: [2, 3, 4], land: [5] },
+};
+
+// §6.4 : le trick ne compte que si le rider est dans la partie « trick en l'air »
+// de son animation ; c'est aussi la fenêtre du perfect landing.
+const FENETRE_TRICK = {
+  ollie: [2, 3],
+  flip: [3, 5],
+  nocomply: [2, 4],
+  manual: [2, 4],
+};
+
+const FPS = {
+  idle: 6,
+  roll: 14,
+  ollie: 18,
+  flip: 20,
+  nocomply: 16,
+  manual: 10,
+  grind: 12,
+  crash: 12,
+};
+
+// §5 : la vitesse de l'animation de roulé suit la vitesse du rider.
+function fpsRoulé(vitesse) {
+  return Math.max(8, Math.min(20, 8 + vitesse / 40));
+}
+
+// §5 : la dernière frame de chute reste affichée avant la réapparition.
+const DUREE_CRASH_FIGE = 0.9;
+
+// §5 : pas de frame de réception dédiée — un écrasement vertical bref suffit à
+// vendre l'impact.
+const SQUASH_RECEPTION = 0.88;
+const DUREE_RECEPTION = 0.1;
+
+return { PHASES, FENETRE_TRICK, FPS, fpsRoulé, DUREE_CRASH_FIGE, SQUASH_RECEPTION, DUREE_RECEPTION };
+})();
+__mod["src/game/player.js"] = (function () {
+// Le rider : physique et machine à états d'animation.
+//
+// Un seul objet pour les deux personnages — seuls les coefficients de riders.js
+// et le préfixe d'animation changent (§7).
+
+const { Action } = __mod["src/core/input.js"];
+const { getRider } = __mod["src/data/riders.js"];
+const { PHASES, FENETRE_TRICK, FPS, fpsRoulé, DUREE_CRASH_FIGE, SQUASH_RECEPTION, DUREE_RECEPTION } = __mod["src/data/anims.js"];
+
+const RiderState = {
+  IDLE: 'IDLE',
+  ROLL: 'ROLL',
+  AIR: 'AIR',
+  LAND: 'LAND',
+  CRASH: 'CRASH',
+};
+
+const GRAVITE = 2200;
+const GRAVITE_BOOST = 1400;   // §6.3 : montée du boost seulement
+const CHUTE_MAX = 1400;
+
+const COYOTE = 0.09;          // §6.3
+const FENETRE_CONVERSION = 0.14;     // voir commentaire sur le double tap
+
+// §6.2 : vitesse de défilement.
+const VITESSE_BASE = 240;
+const VITESSE_GAIN = 8;              // par palier
+const PALIER = 10;                   // secondes
+const VITESSE_MAX = 460;
+const LEAN = 0.15;
+
+// §6.3 : les trois sauts.
+const SAUTS = {
+  ollie: { v0: -620, gravite: GRAVITE, anim: 'ollie', points: 50 },
+  flip: { v0: -820, gravite: GRAVITE, anim: 'flip', points: 150 },
+  boost: { v0: -700, gravite: GRAVITE_BOOST, anim: null, points: 200 },
+};
+
+const hauteurSommet = (v0, g) => (v0 * v0) / (2 * g);
+
+function createPlayer({ rider = 'skate', direction = 1 } = {}) {
+  const stats = getRider(rider);
+
+  const p = {
+    stats,
+    direction,                 // +1 vers la droite, -1 vers la gauche (§6.2)
+
+    x: 0, y: 0, vy: 0,
+    prevX: 0, prevY: 0,
+
+    state: RiderState.IDLE,
+    auSol: true,
+    coyote: 0,
+    tempsVol: 0,
+    sautEnCours: null,         // clé de SAUTS
+    animSaut: 'ollie',         // anim jouée pendant le vol
+    bonusRampe: 1,             // §6.5 : une rampe majore le prochain saut
+
+    tempsAnim: 0,
+    tempsEtat: 0,
+    squash: 1,
+
+    vitesse: VITESSE_BASE,
+    tempsCourse: 0,
+    distance: 0,
+
+    /** Réinitialise le rider au sol, sans toucher aux compteurs de run. */
+    poser(x, y) {
+      p.x = p.prevX = x;
+      p.y = p.prevY = y;
+      p.vy = 0;
+      p.auSol = true;
+      p.coyote = 0;
+      p.tempsVol = 0;
+      p.sautEnCours = null;
+      p.squash = 1;
+      setState(RiderState.ROLL);
+    },
+
+    update(dt, { input, solY }) {
+      p.prevX = p.x;
+      p.prevY = p.y;
+      p.tempsEtat += dt;
+      p.tempsAnim += dt;
+
+      if (p.state === RiderState.CRASH) {
+        majChute(dt, solY);
+        return;
+      }
+
+      majVitesse(dt, input);
+      majSaut(input);
+      majPhysique(dt, solY);
+      majAnim(dt);
+    },
+
+    /** Clé de frame à dessiner. */
+    frameKey() {
+      const pre = stats.prefixe;
+      switch (p.state) {
+        case RiderState.IDLE: return `${pre}.idle.${indexBoucle('idle', 3)}`;
+        case RiderState.ROLL: return `${pre}.roll.${indexRoulé()}`;
+        case RiderState.AIR: return `${pre}.${p.animSaut}.${indexVol()}`;
+        case RiderState.LAND: return `${pre}.${p.animSaut}.${dernierePhase()}`;
+        case RiderState.CRASH: return `${pre}.crash.${indexCrash()}`;
+        default: return `${pre}.idle.0`;
+      }
+    },
+
+    /** §6.4 : le rider est-il dans la fenêtre de trick de son animation ? */
+    dansFenetreTrick() {
+      if (p.state !== RiderState.AIR) return false;
+      const f = FENETRE_TRICK[p.animSaut];
+      if (!f) return false;
+      const i = indexVol();
+      return i >= f[0] && i <= f[1];
+    },
+
+    /** Déclenche la chute (§6.7). */
+    crasher() {
+      if (p.state === RiderState.CRASH) return;
+      setState(RiderState.CRASH);
+      p.vy = Math.min(p.vy, -180); // le rider est projeté avant de retomber
+    },
+
+    get crashTermine() {
+      return p.state === RiderState.CRASH && p.tempsEtat >= DUREE_CRASH_FIGE;
+    },
+  };
+
+  // ── Interne ────────────────────────────────────────────────────────────────
+
+  function setState(s) {
+    if (p.state === s) return;
+    p.state = s;
+    p.tempsEtat = 0;
+    p.tempsAnim = 0;
+  }
+
+  function majVitesse(dt, input) {
+    p.tempsCourse += dt;
+    const paliers = Math.floor(p.tempsCourse / PALIER);
+    const base = Math.min(VITESSE_MAX, VITESSE_BASE + paliers * VITESSE_GAIN);
+
+    let facteur = 1;
+    if (input.isDown(Action.LEAN_FWD)) facteur = 1 + LEAN;
+    else if (input.isDown(Action.LEAN_BACK)) facteur = 1 - LEAN;
+
+    p.vitesse = base * stats.vitesse * facteur;
+    p.distance += p.vitesse * dt;
+  }
+
+  function lancerSaut(type) {
+    const saut = SAUTS[type];
+    // Le boost n'a pas d'animation propre : il emprunte le spécial du rider,
+    // no-comply pour le skate, manual pour le roller (§7).
+    p.animSaut = saut.anim || stats.special;
+    p.sautEnCours = type;
+    p.vy = saut.v0 * stats.hauteurSaut * p.bonusRampe;
+    p.graviteMontee = saut.gravite;
+    p.auSol = false;
+    p.coyote = 0;
+    p.tempsVol = 0;
+    p.bonusRampe = 1;
+    setState(RiderState.AIR);
+  }
+
+  /** Recale le saut en cours pour culminer à `cible` px au-dessus du sol. */
+  function convertirVers(type, solY) {
+    const saut = SAUTS[type];
+    const cible = hauteurSommet(saut.v0 * stats.hauteurSaut, saut.gravite);
+    const acquise = solY - p.y;
+    p.vy = -Math.sqrt(2 * saut.gravite * Math.max(0, cible - acquise));
+    p.graviteMontee = saut.gravite;
+    p.animSaut = saut.anim || stats.special;
+    p.sautEnCours = type;
+  }
+
+  function majSaut(input) {
+    // Note d'implémentation — « variable jump height » (§6.3).
+    //
+    // La règle « relâcher tôt coupe la vitesse verticale à 45 % » ne peut
+    // s'appliquer à aucun des trois sauts de ce jeu, parce que le schéma
+    // d'entrées du §11 la contredit :
+    //   • l'ollie part *au relâchement* d'un tap court — la touche est déjà
+    //     lâchée à l'instant du décollage, la coupure serait systématique ;
+    //   • le boost naît d'un double tap ou d'un Shift+Espace, gestes brefs par
+    //     nature — même problème ;
+    //   • le flip part au franchissement du seuil de 150 ms. Y appliquer la
+    //     coupure obligeait à maintenir ~500 ms pour obtenir la hauteur
+    //     nominale : essayé, mesuré à 122 px au lieu de 153. Un joueur qui fait
+    //     exactement le geste demandé par le brief rate son saut.
+    //
+    // Les trois sauts gardent donc une hauteur fixe — ce que le tableau du §6.3
+    // spécifie au pixel près, et ce qui sert le cœur du design : trois sauts
+    // lisibles dont on choisit un pour ses contraintes, pas une modulation
+    // continue. La profondeur de jeu vient du choix du saut et de l'airtime
+    // qu'il coûte, pas d'un dosage de la touche.
+    const peutSauter = p.auSol || p.coyote > 0;
+
+    if (peutSauter) {
+      if (input.consume(Action.JUMP_LONG)) return lancerSaut('boost');
+      if (input.consume(Action.JUMP_HIGH)) return lancerSaut('flip');
+      if (input.consume(Action.JUMP_SHORT)) return lancerSaut('ollie');
+      return;
+    }
+
+    // Le premier tap d'un double tap est forcément parti en ollie : attendre la
+    // fenêtre de double tap pour trancher ajouterait 250 ms de latence à chaque
+    // saut. Le second tap convertit donc le saut à peine amorcé — même geste,
+    // pas un double saut.
+    if (p.tempsVol < FENETRE_CONVERSION && p.vy < 0
+        && p.sautEnCours !== 'boost' && input.consume(Action.JUMP_LONG)) {
+      convertirVers('boost', p.solY);
+    }
+  }
+
+  function majPhysique(dt, solY) {
+    p.solY = solY;
+
+    if (p.auSol) {
+      p.y = solY;
+      p.vy = 0;
+      return;
+    }
+
+    p.tempsVol += dt;
+    if (p.coyote > 0) p.coyote = Math.max(0, p.coyote - dt);
+
+    const g = p.vy < 0 ? (p.graviteMontee || GRAVITE) : GRAVITE;
+    p.vy = Math.min(p.vy + g * dt, CHUTE_MAX);
+    p.y += p.vy * dt;
+
+    if (p.y >= solY) {
+      p.y = solY;
+      p.vy = 0;
+      p.auSol = true;
+      p.tempsVol = 0;
+      p.sautEnCours = null;
+      if (p.state === RiderState.AIR) setState(RiderState.LAND);
+    }
+  }
+
+  function majChute(dt, solY) {
+    p.vy = Math.min(p.vy + GRAVITE * dt, CHUTE_MAX);
+    p.y = Math.min(solY, p.y + p.vy * dt);
+    if (p.y >= solY) { p.y = solY; p.vy = 0; p.auSol = true; }
+  }
+
+  function majAnim(dt) {
+    if (p.state === RiderState.LAND) {
+      // §5 : écrasement vertical bref, qui se relâche progressivement.
+      const t = Math.min(1, p.tempsEtat / DUREE_RECEPTION);
+      p.squash = SQUASH_RECEPTION + (1 - SQUASH_RECEPTION) * t;
+      if (p.tempsEtat >= DUREE_RECEPTION) {
+        p.squash = 1;
+        setState(RiderState.ROLL);
+      }
+      return;
+    }
+    p.squash = 1;
+  }
+
+  // ── Sélection de frame ─────────────────────────────────────────────────────
+
+  function indexBoucle(nom, nbFrames) {
+    return Math.floor(p.tempsAnim * FPS[nom]) % nbFrames;
+  }
+
+  function indexRoulé() {
+    return Math.floor(p.tempsAnim * fpsRoulé(p.vitesse)) % 5;
+  }
+
+  function phases() {
+    return PHASES[p.animSaut] || PHASES.ollie;
+  }
+
+  function dernierePhase() {
+    const ph = phases();
+    return ph.land[ph.land.length - 1];
+  }
+
+  function indexVol() {
+    const ph = phases();
+    const fps = FPS[p.animSaut] || 16;
+    const iPop = Math.floor(p.tempsAnim * fps);
+    if (iPop < ph.pop.length) return ph.pop[iPop];
+    // Le pop est joué, on boucle sur les frames aériennes jusqu'au contact.
+    const iAir = iPop - ph.pop.length;
+    return ph.air[iAir % ph.air.length];
+  }
+
+  function indexCrash() {
+    // §5 : l'animation se joue une fois puis se fige sur la dernière frame.
+    return Math.min(5, Math.floor(p.tempsEtat * FPS.crash));
+  }
+
+  /** Le rider vient de quitter le sol sans sauter : il garde sa fenêtre coyote. */
+  p.quitterLeSol = function quitterLeSol() {
+    if (!p.auSol) return;
+    p.auSol = false;
+    p.coyote = COYOTE;
+    p.tempsVol = 0;
+    if (p.state === RiderState.ROLL) setState(RiderState.AIR);
+    p.animSaut = 'ollie';
+  };
+
+  return p;
+}
+
+return { RiderState, GRAVITE, GRAVITE_BOOST, CHUTE_MAX, COYOTE, SAUTS, createPlayer };
+})();
 __mod["src/main.js"] = (function () {
 // Maxence Rider — amorçage.
 
@@ -2981,7 +3457,9 @@ const { createLoop } = __mod["src/core/loop.js"];
 const { createInput, Action } = __mod["src/core/input.js"];
 const { loadAssets, atlas } = __mod["src/core/assets.js"];
 const { createRenderer } = __mod["src/render/renderer.js"];
+const { drawFrame } = __mod["src/render/sprite.js"];
 const { createStateMachine, State } = __mod["src/game/state.js"];
+const { createPlayer, RiderState } = __mod["src/game/player.js"];
 
 const DEBUG = new URLSearchParams(location.search).has('debug');
 
@@ -2993,128 +3471,63 @@ const panne = document.getElementById('panne');
 const renderer = createRenderer(canvas);
 const { ctx, view } = renderer;
 
-// ── Bac à sable P1 ───────────────────────────────────────────────────────────
-// Un carré rouge qui court et saute : de quoi valider la boucle, les entrées et
-// la mise à l'échelle avant d'y brancher le vrai rider (P2).
+const SOL = 40; // hauteur du sol depuis le bas de l'espace virtuel
 
-const GRAVITE = 2200;
-// Le boost monte sous gravité réduite (§6.3) : c'est ce qui lui donne son
-// airtime long, pas une vitesse initiale plus forte. À gravité pleine il
-// plafonnerait à 111 px, sous les 175 px attendus.
-const GRAVITE_BOOST = 1400;
-const CHUTE_MAX = 1400;
-// Le premier tap d'un double tap part forcément en ollie : attendre la fenêtre
-// de double tap pour trancher ajouterait 250 ms de latence à chaque saut. On
-// laisse donc partir l'ollie et le second tap convertit le saut à peine amorcé.
-const FENETRE_CONVERSION = 0.14;
-const HAUTEUR_BOOST = (700 * 700) / (2 * 1400); // 175 px, §6.3
-const SOL = 40; // hauteur du sol depuis le bas de l'écran
+const player = createPlayer({ rider: 'skate', direction: 1 });
+const monde = { defilement: 0 };
 
-const carre = {
-  x: 0, y: 0, vy: 0,
-  taille: 16,
-  auSol: true,
-  graviteMontee: GRAVITE,
-  tempsVol: 0,
-  // Position au pas précédent, pour interpoler au rendu.
-  prevX: 0, prevY: 0,
-};
-
-const monde = { defilement: 0, vitesse: 240 };
+function solY() {
+  return view.h - SOL;
+}
 
 function reinitialiser() {
-  carre.x = view.w * 0.3;
-  carre.y = view.h - SOL;
-  carre.vy = 0;
-  carre.auSol = true;
-  carre.prevX = carre.x;
-  carre.prevY = carre.y;
+  player.poser(Math.round(view.w * 0.3), solY());
+  player.tempsCourse = 0;
+  player.distance = 0;
   monde.defilement = 0;
-}
-
-/** Recale le saut en cours pour qu'il culmine à `cible` px au-dessus du sol. */
-function convertirVers(cible, graviteMontee) {
-  const hauteurActuelle = (view.h - SOL) - carre.y;
-  const restant = Math.max(0, cible - hauteurActuelle);
-  carre.vy = -Math.sqrt(2 * graviteMontee * restant);
-  carre.graviteMontee = graviteMontee;
-}
-
-function sauter(vitesse, graviteMontee = GRAVITE) {
-  carre.vy = vitesse;
-  carre.auSol = false;
-  carre.graviteMontee = graviteMontee;
-  carre.tempsVol = 0;
 }
 
 function majJeu(dt) {
   input.update();
+  player.update(dt, { input, solY: solY() });
 
-  carre.prevX = carre.x;
-  carre.prevY = carre.y;
+  // §6.2 : le rider avance tout seul ; c'est le monde qui défile sous lui.
+  monde.defilement += player.vitesse * player.direction * dt;
+  player.x = Math.round(view.w * 0.3);
+  player.prevX = player.x;
 
-  // §6.2 : la vitesse se module de ±15 % par inclinaison.
-  let facteur = 1;
-  if (input.isDown(Action.LEAN_FWD)) facteur = 1.15;
-  else if (input.isDown(Action.LEAN_BACK)) facteur = 0.85;
-  monde.defilement += monde.vitesse * facteur * dt;
-
-  // §6.3 : trois sauts, trois courbes distinctes.
-  if (carre.auSol) {
-    if (input.consume(Action.JUMP_LONG)) sauter(-700, GRAVITE_BOOST);
-    else if (input.consume(Action.JUMP_HIGH)) sauter(-820);
-    else if (input.consume(Action.JUMP_SHORT)) sauter(-620);
-  } else if (carre.tempsVol < FENETRE_CONVERSION && carre.vy < 0
-             && input.consume(Action.JUMP_LONG)) {
-    // Conversion, pas double saut : c'est le même geste qui se termine. On vise
-    // le sommet du boost au lieu d'ajouter sa vitesse à celle déjà acquise —
-    // sinon le saut converti monterait plus haut qu'un boost franc.
-    convertirVers(HAUTEUR_BOOST, GRAVITE_BOOST);
-  }
-
-  if (!carre.auSol) {
-    carre.tempsVol += dt;
-    const g = carre.vy < 0 ? carre.graviteMontee : GRAVITE;
-    carre.vy = Math.min(carre.vy + g * dt, CHUTE_MAX);
-    carre.y += carre.vy * dt;
-    const sol = view.h - SOL;
-    if (carre.y >= sol) {
-      carre.y = sol;
-      carre.vy = 0;
-      carre.auSol = true;
-      carre.tempsVol = 0;
-    }
-  }
-
-  // Le rider reste à 30 % de l'écran dans le sens de la marche (§6.2).
-  carre.x = Math.round(view.w * 0.3);
+  if (input.consume(Action.RESTART)) reinitialiser();
 }
 
 function dessinerJeu(alpha) {
-  const x = carre.prevX + (carre.x - carre.prevX) * alpha;
-  const y = carre.prevY + (carre.y - carre.prevY) * alpha;
-  const solY = view.h - SOL;
+  const y = player.prevY + (player.y - player.prevY) * alpha;
+  const sol = solY();
 
-  // Ciel
   ctx.fillStyle = '#1b1d27';
   ctx.fillRect(0, 0, view.w, view.h);
 
-  // Sol, avec des dalles qui défilent : sans repère mobile, impossible de voir
-  // si le jeu avance à la bonne vitesse.
+  // Sol provisoire : les vraies tuiles et le décor arrivent en P3/P5.
   ctx.fillStyle = '#2a2c3a';
-  ctx.fillRect(0, solY, view.w, view.h - solY);
+  ctx.fillRect(0, sol, view.w, view.h - sol);
   ctx.fillStyle = '#3a3d4e';
   const pas = 32;
-  const decalage = monde.defilement % pas;
+  const decalage = ((monde.defilement % pas) + pas) % pas;
   for (let sx = -decalage; sx < view.w; sx += pas) {
-    ctx.fillRect(Math.round(sx), solY, 1, view.h - solY);
+    ctx.fillRect(Math.round(sx), sol, 1, view.h - sol);
   }
   ctx.fillStyle = '#4ed4c4';
-  ctx.fillRect(0, solY, view.w, 1);
+  ctx.fillRect(0, sol, view.w, 1);
 
-  // Le carré rouge de la phase 1.
-  ctx.fillStyle = '#ff5c3a';
-  ctx.fillRect(Math.round(x - carre.taille / 2), Math.round(y - carre.taille), carre.taille, carre.taille);
+  drawFrame(ctx, player.frameKey(), player.x, y, {
+    flip: player.direction < 0,
+    scaleY: player.squash,
+  });
+
+  if (DEBUG) {
+    ctx.fillStyle = 'rgba(255,201,60,0.9)';
+    ctx.fillRect(player.x - 3, Math.round(y), 7, 1);
+    ctx.fillRect(player.x, Math.round(y) - 3, 1, 7);
+  }
 }
 
 // ── Écrans ───────────────────────────────────────────────────────────────────
@@ -3157,24 +3570,24 @@ const input = createInput(canvas, { onPause: basculerPause });
 boutonPause.addEventListener('click', basculerPause);
 
 // ── Orientation et redimensionnement ─────────────────────────────────────────
-// C3 : relayout à chaud, sans rechargement ni perte d'état. Les entités sont
-// repositionnées proportionnellement dans le nouvel espace virtuel.
+// C3 : relayout à chaud, sans rechargement ni perte d'état.
 
 function surRedimensionnement() {
-  const ancien = { w: view.w, h: view.h };
+  const ancienSol = solY();
   renderer.resize();
-  if (view.w !== ancien.w || view.h !== ancien.h) {
-    const ratioY = (view.h - SOL) / (ancien.h - SOL);
-    carre.y *= ratioY;
-    carre.prevY *= ratioY;
-    carre.x = Math.round(view.w * 0.3);
-    carre.prevX = carre.x;
+  const nouveauSol = solY();
+  if (nouveauSol !== ancienSol) {
+    // On conserve la hauteur au-dessus du sol, pas la coordonnée absolue :
+    // un rider en plein saut ne doit ni se téléporter au sol ni sortir de l'écran.
+    const hauteur = ancienSol - player.y;
+    player.y = nouveauSol - hauteur;
+    player.prevY = player.y;
   }
+  player.x = player.prevX = Math.round(view.w * 0.3);
 }
 
 window.addEventListener('resize', surRedimensionnement);
 window.addEventListener('orientationchange', surRedimensionnement);
-// iOS ne déclenche pas toujours resize quand les barres système se replient.
 window.visualViewport?.addEventListener('resize', surRedimensionnement);
 
 document.addEventListener('visibilitychange', () => {
@@ -3195,26 +3608,28 @@ const boucle = createLoop({
 
 function dessinerDebug() {
   const lignes = [
-    `${boucle.stats.fps} fps · ${boucle.stats.updates} maj/frame`,
-    `${view.w}×${view.h} ×${view.scale} dpr ${view.dpr}`,
-    view.portrait ? 'portrait' : 'paysage',
-    `frames atlas : ${Object.keys(atlas.frames).length}`,
-  ];
+    `${boucle.stats.fps} fps · ${boucle.stats.updates} maj`,
+    `${view.w}x${view.h} x${view.scale} ${view.portrait ? 'portrait' : 'paysage'}`,
+    `${player.state} ${player.frameKey()}`,
+    `v ${player.vitesse.toFixed(0)} px/s · ${(player.distance / 10).toFixed(0)} m`,
+    player.state === RiderState.AIR ? `vol ${player.tempsVol.toFixed(2)}s` : '',
+  ].filter(Boolean);
   ctx.font = '6px ui-monospace, monospace';
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
   ctx.fillStyle = 'rgba(18,19,26,0.7)';
-  ctx.fillRect(2, 2, 96, lignes.length * 8 + 4);
+  ctx.fillRect(2, 2, 120, lignes.length * 8 + 4);
   ctx.fillStyle = '#ffc93c';
   lignes.forEach((l, i) => ctx.fillText(l, 5, 6 + i * 8));
 }
 
 // ── Démarrage ────────────────────────────────────────────────────────────────
 
-// En mode debug seulement : donne prise sur l'état interne, pour l'inspection
-// en console et pour les tests automatisés.
 if (DEBUG) {
-  window.__maxence = { carre, monde, view, jeu, boucle, input, Action, State };
+  window.__maxence = {
+    player, monde, view, jeu, boucle, input, atlas,
+    Action, State, RiderState, solY,
+  };
 }
 
 loadAssets()

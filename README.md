@@ -20,7 +20,7 @@ Puis ouvrir <http://localhost:8000>. Le jeu fonctionne aussi en ouvrant
 |---|---|---|
 | P0 | Pipeline assets : découpe des planches, atlas | ✅ |
 | P1 | Shell, boucle, rendu, input abstrait | ✅ |
-| P2 | Rider animé, physique, trois sauts | à venir |
+| P2 | Rider animé, physique, trois sauts | ✅ |
 | P3 | Chunks, obstacles, collisions, crash | à venir |
 | P4 | Grind, manual, combos, scoring | à venir |
 | P5 | Décors, parallaxe, caméra | à venir |

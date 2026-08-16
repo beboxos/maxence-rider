@@ -9,6 +9,8 @@ export const Action = {
   JUMP_HIGH: 'JUMP_HIGH',       // flip
   JUMP_LONG: 'JUMP_LONG',       // boost
   CROUCH_MANUAL: 'CROUCH_MANUAL',
+  JUMP_HOLD: 'JUMP_HOLD',       // le geste de saut est encore en cours
+
   LEAN_FWD: 'LEAN_FWD',
   LEAN_BACK: 'LEAN_BACK',
   PAUSE: 'PAUSE',
@@ -49,6 +51,7 @@ export function createInput(target, { onPause } = {}) {
     g.start = now();
     g.longFired = false;
     g.skipRelease = false;
+    held[Action.JUMP_HOLD] = true;
 
     if (boost || now() - lastReleaseAt <= DOUBLE_TAP_WINDOW) {
       press(Action.JUMP_LONG);
@@ -77,6 +80,7 @@ export function createInput(target, { onPause } = {}) {
     g.longFired = false;
     if (!keyGesture.active && !touchGesture.active) {
       held[Action.CROUCH_MANUAL] = false;
+      held[Action.JUMP_HOLD] = false;
     }
   }
 

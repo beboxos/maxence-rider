@@ -20,8 +20,12 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const ENTRY = join(ROOT, 'src/main.js');
 
 const RE_IMPORT_NAMED = /^import\s*\{([^}]*)\}\s*from\s*['"]([^'"]+)['"];?\s*$/;
-const RE_IMPORT_DEFAULT = /^import\s+([A-Za-z_$][\w$]*)\s+from\s*['"]([^'"]+)['"];?\s*$/;
-const RE_EXPORT_DECL = /^export\s+(?:async\s+)?(function|const|let|class)\s+([A-Za-z_$][\w$]*)/;
+// Les identifiants du projet sont en français : `fpsRoulé` doit être capturé
+// entier. \w s'arrête au premier caractère accentué et produirait un export
+// tronqué, donc un bundle cassé sans la moindre erreur au moment de la génération.
+const ID = '[\\p{L}_$][\\p{L}\\p{N}_$]*';
+const RE_IMPORT_DEFAULT = new RegExp(`^import\\s+(${ID})\\s+from\\s*['"]([^'"]+)['"];?\\s*$`, 'u');
+const RE_EXPORT_DECL = new RegExp(`^export\\s+(?:async\\s+)?(function|const|let|class)\\s+(${ID})`, 'u');
 const RE_EXPORT_DEFAULT = /^export\s+default\s+/;
 
 const modules = new Map(); // chemin absolu → { id, code, deps, exports, hasDefault }
@@ -30,7 +34,12 @@ const order = [];
 function analyser(fichier) {
   if (modules.has(fichier)) return;
 
-  const source = readFileSync(fichier, 'utf8');
+  // Les imports nommés à rallonge s'écrivent sur plusieurs lignes ; on les
+  // remet à plat avant l'analyse, qui raisonne ligne par ligne.
+  const source = readFileSync(fichier, 'utf8').replace(
+    /^import\s*\{[^}]*\}\s*from\s*['"][^'"]+['"];?/gm,
+    (m) => m.replace(/\s+/g, ' '),
+  );
   const id = relative(ROOT, fichier).split('\\').join('/');
   const deps = [];
   const exports = [];
