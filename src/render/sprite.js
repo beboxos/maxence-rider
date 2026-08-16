@@ -7,6 +7,16 @@
 
 import { frame, sheetImage } from '../core/assets.js';
 
+// Malgré son nom, la version « Droite » des planches (§3) dessine le
+// personnage visage tourné vers la GAUCHE — vérifié sur skate.roll.0, jambe
+// d'appel et tête pointent à gauche. Le nommage Gauche/Droite désigne le sens
+// de niveau voulu (§3, §6.2 : « niveaux impairs vers la droite »), pas
+// l'orientation réelle du dessin. Isolée ici pour qu'un test la verrouille :
+// sans ce flip inversé, le rider semblait avancer à reculons.
+export function flipPourDirection(direction) {
+  return direction > 0;
+}
+
 /**
  * @param {CanvasRenderingContext2D} ctx
  * @param {string} key      clé de frame dans l'atlas

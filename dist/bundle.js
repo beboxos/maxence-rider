@@ -2835,6 +2835,23 @@ function hasFrame(key) {
 
 return { atlas, loadAssets, sheetImage, frame, anim, hasFrame };
 })();
+__mod["src/core/rng.js"] = (function () {
+// PRNG seedé (mulberry32) — reproductible : un run endless peut être rejoué à
+// l'identique à partir de sa seed affichée (§6.7).
+
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function rng() {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+return { mulberry32 };
+})();
 __mod["src/render/renderer.js"] = (function () {
 // Rendu : canvas, mise à l'échelle, orientation.
 //
@@ -2939,6 +2956,16 @@ __mod["src/render/sprite.js"] = (function () {
 
 const { frame, sheetImage } = __mod["src/core/assets.js"];
 
+// Malgré son nom, la version « Droite » des planches (§3) dessine le
+// personnage visage tourné vers la GAUCHE — vérifié sur skate.roll.0, jambe
+// d'appel et tête pointent à gauche. Le nommage Gauche/Droite désigne le sens
+// de niveau voulu (§3, §6.2 : « niveaux impairs vers la droite »), pas
+// l'orientation réelle du dessin. Isolée ici pour qu'un test la verrouille :
+// sans ce flip inversé, le rider semblait avancer à reculons.
+function flipPourDirection(direction) {
+  return direction > 0;
+}
+
 /**
  * @param {CanvasRenderingContext2D} ctx
  * @param {string} key      clé de frame dans l'atlas
@@ -2990,7 +3017,7 @@ function drawMissing(ctx, x, y, w = 16, h = 16) {
   ctx.restore();
 }
 
-return { drawFrame, drawMissing };
+return { flipPourDirection, drawFrame, drawMissing };
 })();
 __mod["src/game/state.js"] = (function () {
 // Machine à états des écrans.
@@ -3450,16 +3477,522 @@ function createPlayer({ rider = 'skate', direction = 1 } = {}) {
 
 return { RiderState, GRAVITE, GRAVITE_BOOST, CHUTE_MAX, COYOTE, SAUTS, createPlayer };
 })();
+__mod["src/data/tuning.js"] = (function () {
+// Constantes de vitesse partagées (§6.2).
+//
+// Sorties ici plutôt que dans player.js : game/chunks.js en a besoin pour
+// calculer le rab de sécurité entre chunks (§8) sans importer tout le module
+// du rider — et sans risquer que les deux dérivent si on change un chiffre
+// dans un seul des deux fichiers.
+
+const VITESSE_BASE = 240;
+const VITESSE_GAIN = 8;     // par palier
+const PALIER = 10;          // secondes
+const VITESSE_MAX = 460;
+const LEAN = 0.15;          // ±15 % (§6.2)
+
+// Vitesse la plus haute jamais atteignable, lean compris : c'est elle qui sert
+// de référence de sécurité pour l'invariant du §8 (voir game/chunks.js).
+const VITESSE_MAX_LEAN = VITESSE_MAX * (1 + LEAN);
+
+return { VITESSE_BASE, VITESSE_GAIN, PALIER, VITESSE_MAX, LEAN, VITESSE_MAX_LEAN };
+})();
+__mod["src/game/chunks.js"] = (function () {
+// Séquencement des chunks : tirage en sac et placement garanti sans piège (§8).
+//
+// Note d'implémentation — l'invariant du §8, comment il est réellement tenu.
+//
+// « La distance entre le dernier obstacle d'un chunk et le premier du suivant
+// doit toujours être ≥ speed × 0.9. » Un chunk fait 480 px de large. À la
+// vitesse plafond avec lean (§6.2 : 460 × 1.15 ≈ 529 px/s), le gap requis est
+// de ~476 px — quasiment la largeur d'un chunk entier. Si on demandait à
+// CHAQUE chunk de rester sûr contre N'IMPORTE QUEL voisin par construction
+// statique (dernier obstacle proche du bord gauche ET premier obstacle proche
+// du bord droit, pour survivre aux deux rôles), il ne resterait qu'une bande
+// utile d'une centaine de pixels au centre de chaque chunk — invivable pour du
+// contenu varié, et ça contredit l'exemple même du brief (obstacles à
+// x=120, 260, 380, qui ne passerait pas ce test statique).
+//
+// Le placement compense donc dynamiquement, au moment d'accoler deux chunks :
+// l'écart réel entre le dernier obstacle du chunk qui se termine et le premier
+// du chunk qui commence est mesuré, et un « rab » silencieux est inséré si
+// besoin pour toujours atteindre le gap requis à la vitesse plafond — quelle
+// que soit la vitesse réelle au moment où le rider y arrivera. Un chunk vide
+// (respiration) n'a pas de dernier obstacle : rien à garantir, rab nul. Ça
+// laisse les chunks libres d'être aussi riches que le brief le suggère, tout
+// en rendant l'invariant vrai par construction, pas par une contrainte
+// d'auteur difficile à respecter et impossible à vérifier à l'œil.
+
+const { VITESSE_MAX_LEAN } = __mod["src/data/tuning.js"];
+
+function dernierObstacleX(chunk) {
+  let max = -Infinity;
+  for (const e of chunk.entities) if (e.x > max) max = e.x;
+  return max === -Infinity ? null : max;
+}
+
+function premierObstacleX(chunk) {
+  let min = Infinity;
+  for (const e of chunk.entities) if (e.x < min) min = e.x;
+  return min === Infinity ? null : min;
+}
+
+/**
+ * Offset du chunk `suivant`, en insérant le rab nécessaire pour respecter
+ * l'invariant du §8 à `vitesse` px/s (par défaut, la vitesse plafond avec
+ * lean : c'est la seule qui rend la garantie valable "à toutes les vitesses"
+ * sans avoir à connaître la vitesse réelle au moment du passage).
+ */
+function placerSuivant(precedent, precedentOffset, suivant, vitesse = VITESSE_MAX_LEAN) {
+  const finPrecedent = precedentOffset + precedent.width;
+  const dernier = dernierObstacleX(precedent);
+  const premier = premierObstacleX(suivant);
+  if (dernier === null || premier === null) return finPrecedent;
+
+  const requis = vitesse * 0.9;
+  const actuel = (precedent.width - dernier) + premier;
+  const rab = Math.max(0, requis - actuel);
+  return finPrecedent + rab;
+}
+
+/** Sac : pioche sans remise dans `chunks`, remélange une fois épuisé (§8). */
+function createSac(chunks, rng) {
+  let pioche = [];
+  function remplir() {
+    pioche = chunks.slice();
+    for (let i = pioche.length - 1; i > 0; i--) {
+      const j = Math.floor(rng() * (i + 1));
+      [pioche[i], pioche[j]] = [pioche[j], pioche[i]];
+    }
+  }
+  return {
+    tirer() {
+      if (pioche.length === 0) remplir();
+      return pioche.pop();
+    },
+  };
+}
+
+return { dernierObstacleX, premierObstacleX, placerSuivant, createSac };
+})();
+__mod["src/data/chunks.js"] = (function () {
+// Bibliothèque de chunks (§8) : segments de 480 px, purement déclaratifs.
+//
+// `entities[].x` est une position LOCALE au chunk (0..480) ; game/chunks.js se
+// charge de l'espacement entre chunks (voir son commentaire d'en-tête pour le
+// pourquoi de l'invariant §8). Ici, on écrit du contenu naturel, sans se
+// soucier des bords — exactement comme l'exemple du brief lui-même.
+//
+// Les collectibles (`coin`) n'existent pas encore : le scoring arrive en P4
+// (§6.6). Le format accueillera le champ sans changer de forme.
+//
+// Structure demandée par le brief : 6 chunks par palier de difficulté (1 à 5),
+// plus 3 chunks « respiration » (vides) et 3 chunks « bonus » (combo garanti).
+
+const chunk = (id, difficulty, requires, entities) => ({
+  id, width: 480, difficulty, requires, ground: 'concrete', entities, decor: [],
+});
+
+// ─── Palier 1 — Ollie seul, obstacles bas isolés ─────────────────────────────
+const PALIER_1 = [
+  chunk('p1_curb_seul', 1, ['ollie'], [{ type: 'curb', x: 220 }]),
+  chunk('p1_cone_seul', 1, ['ollie'], [{ type: 'cone', x: 260 }]),
+  chunk('p1_hydrant_seul', 1, ['ollie'], [{ type: 'hydrant', x: 200 }]),
+  chunk('p1_deux_curbs', 1, ['ollie'], [{ type: 'curb', x: 120 }, { type: 'curb', x: 340 }]),
+  chunk('p1_cone_hydrant', 1, ['ollie'], [{ type: 'cone', x: 150 }, { type: 'hydrant', x: 330 }]),
+  chunk('p1_triple_bas', 1, ['ollie'], [
+    { type: 'curb', x: 100 }, { type: 'cone', x: 240 }, { type: 'hydrant', x: 380 },
+  ]),
+];
+
+// ─── Palier 2 — Flip, obstacles hauts ────────────────────────────────────────
+const PALIER_2 = [
+  chunk('p2_poubelle_seule', 2, ['ollie', 'flip'], [{ type: 'bin', x: 220 }]),
+  chunk('p2_banc_seul', 2, ['ollie', 'flip'], [{ type: 'bench', x: 240 }]),
+  chunk('p2_distributeur', 2, ['ollie', 'flip'], [{ type: 'vending', x: 200 }]),
+  chunk('p2_mix_bas_haut', 2, ['ollie', 'flip'], [
+    { type: 'curb', x: 90 }, { type: 'planter', x: 260 },
+  ]),
+  chunk('p2_jardiniere_poubelle', 2, ['ollie', 'flip'], [
+    { type: 'planter', x: 140 }, { type: 'bin', x: 340 },
+  ]),
+  chunk('p2_enchainement_hauts', 2, ['ollie', 'flip'], [
+    { type: 'bench', x: 110 }, { type: 'cone', x: 220 }, { type: 'vending', x: 360 },
+  ]),
+];
+
+// ─── Palier 3 — Boost, gaps ───────────────────────────────────────────────────
+const PALIER_3 = [
+  chunk('p3_gap_seul', 3, ['ollie', 'flip', 'boost'], [{ type: 'gap', x: 220, w: 90 }]),
+  chunk('p3_gap_large', 3, ['ollie', 'flip', 'boost'], [{ type: 'gap', x: 200, w: 120 }]),
+  chunk('p3_curb_gap', 3, ['ollie', 'flip', 'boost'], [
+    { type: 'curb', x: 80 }, { type: 'gap', x: 260, w: 90 },
+  ]),
+  chunk('p3_gap_poubelle', 3, ['ollie', 'flip', 'boost'], [
+    { type: 'gap', x: 150, w: 80 }, { type: 'bin', x: 360 },
+  ]),
+  chunk('p3_double_gap', 3, ['ollie', 'flip', 'boost'], [
+    { type: 'gap', x: 110, w: 70 }, { type: 'gap', x: 320, w: 70 },
+  ]),
+  chunk('p3_mix_complet', 3, ['ollie', 'flip', 'boost'], [
+    { type: 'cone', x: 70 }, { type: 'gap', x: 200, w: 90 }, { type: 'bench', x: 380 },
+  ]),
+];
+
+// ─── Palier 4 — Rampes, grinds ────────────────────────────────────────────────
+const PALIER_4 = [
+  chunk('p4_rampe_seule', 4, ['ollie', 'flip', 'boost'], [{ type: 'quarterpipe', x: 200 }]),
+  chunk('p4_escalier', 4, ['ollie', 'flip', 'boost'], [{ type: 'stairs', x: 220 }]),
+  chunk('p4_rail_droit', 4, ['ollie', 'flip', 'boost'], [{ type: 'rail', x: 190, y: 4 }]),
+  chunk('p4_rail_kinked', 4, ['ollie', 'flip', 'boost'], [{ type: 'railKinked', x: 190, y: 4 }]),
+  chunk('p4_rampe_rail', 4, ['ollie', 'flip', 'boost'], [
+    { type: 'quarterpipe', x: 80 }, { type: 'rail', x: 280, y: 4 },
+  ]),
+  chunk('p4_escalier_gap', 4, ['ollie', 'flip', 'boost'], [
+    { type: 'stairs', x: 90 }, { type: 'gap', x: 280, w: 80 },
+  ]),
+];
+
+// ─── Palier 5 — Densité maximale, tout mélangé ───────────────────────────────
+const PALIER_5 = [
+  chunk('p5_gauntlet_1', 5, ['ollie', 'flip', 'boost'], [
+    { type: 'curb', x: 60 }, { type: 'bin', x: 160 }, { type: 'gap', x: 280, w: 80 }, { type: 'rail', x: 400, y: 4 },
+  ]),
+  chunk('p5_gauntlet_2', 5, ['ollie', 'flip', 'boost'], [
+    { type: 'cone', x: 50 }, { type: 'quarterpipe', x: 150 }, { type: 'planter', x: 300 }, { type: 'hydrant', x: 400 },
+  ]),
+  chunk('p5_gauntlet_3', 5, ['ollie', 'flip', 'boost'], [
+    { type: 'gap', x: 70, w: 70 }, { type: 'bench', x: 220 }, { type: 'stairs', x: 340 },
+  ]),
+  chunk('p5_gauntlet_4', 5, ['ollie', 'flip', 'boost'], [
+    { type: 'railKinked', x: 60, y: 4 }, { type: 'cone', x: 250 }, { type: 'gap', x: 360, w: 70 },
+  ]),
+  chunk('p5_gauntlet_5', 5, ['ollie', 'flip', 'boost'], [
+    { type: 'vending', x: 60 }, { type: 'curb', x: 180 }, { type: 'planter', x: 300 }, { type: 'hydrant', x: 400 },
+  ]),
+  chunk('p5_gauntlet_6', 5, ['ollie', 'flip', 'boost'], [
+    { type: 'quarterpipe', x: 60 }, { type: 'gap', x: 200, w: 80 }, { type: 'bin', x: 340 }, { type: 'cone', x: 420 },
+  ]),
+];
+
+// ─── Respiration — vides, pour laisser souffler après une séquence dure ─────
+const RESPIRATION = [
+  chunk('respiration_1', 0, [], []),
+  chunk('respiration_2', 0, [], []),
+  chunk('respiration_3', 0, [], []),
+];
+
+// ─── Bonus — rail long, ligne de coins (les coins arrivent en P4) ────────────
+const BONUS = [
+  chunk('bonus_rail_long', 0, ['ollie', 'flip', 'boost'], [
+    { type: 'rail', x: 130, y: 4 }, { type: 'rail', x: 260, y: 4 },
+  ]),
+  chunk('bonus_combo_garanti', 0, ['ollie', 'flip', 'boost'], [
+    { type: 'quarterpipe', x: 80 }, { type: 'rail', x: 220, y: 4 }, { type: 'quarterpipe', x: 380 },
+  ]),
+  chunk('bonus_ligne_bas', 0, ['ollie'], [
+    { type: 'curb', x: 100 }, { type: 'cone', x: 220 }, { type: 'hydrant', x: 340 },
+  ]),
+];
+
+const CHUNKS_PAR_PALIER = {
+  1: PALIER_1, 2: PALIER_2, 3: PALIER_3, 4: PALIER_4, 5: PALIER_5,
+};
+
+const TOUS_LES_CHUNKS = [
+  ...PALIER_1, ...PALIER_2, ...PALIER_3, ...PALIER_4, ...PALIER_5,
+  ...RESPIRATION, ...BONUS,
+];
+
+return { RESPIRATION, BONUS, CHUNKS_PAR_PALIER, TOUS_LES_CHUNKS };
+})();
+__mod["src/game/level.js"] = (function () {
+// Séquenceur de niveau : file de chunks placés, générée au fur et à mesure que
+// le rider avance (§2, §8, §9).
+//
+// Les chunks de respiration et bonus rejoignent le tirage de CHAQUE palier :
+// ils sont sûrs à toute vitesse (respiration = aucun obstacle, bonus = contenu
+// dont l'espacement suit les mêmes règles que le reste), donc rien n'interdit
+// de les mélanger partout — contrairement aux chunks numérotés, qui restent
+// groupés par palier de difficulté (§8 : « on tire sans remise dans le paquet
+// de chunks du palier courant »).
+
+const { createSac, placerSuivant } = __mod["src/game/chunks.js"];
+const { CHUNKS_PAR_PALIER, RESPIRATION, BONUS } = __mod["src/data/chunks.js"];
+
+const CHUNKS_PAR_CHECKPOINT = 5; // §6.7
+
+function createLevel({ rng, palierInitial = 1 } = {}) {
+  const sacsParPalier = new Map();
+  function sacDuPalier(p) {
+    if (!sacsParPalier.has(p)) {
+      const pool = [...(CHUNKS_PAR_PALIER[p] || CHUNKS_PAR_PALIER[1]), ...RESPIRATION, ...BONUS];
+      sacsParPalier.set(p, createSac(pool, rng));
+    }
+    return sacsParPalier.get(p);
+  }
+
+  const placés = [];        // { chunk, offset }
+  const checkpoints = [];   // worldX de chaque checkpoint franchi (§6.7)
+  let palier = palierInitial;
+  let finPlacée = 0;
+  let depuisCheckpoint = 0;
+
+  function pousserUnChunk() {
+    const chunk = sacDuPalier(palier).tirer();
+    const dernier = placés[placés.length - 1];
+    const offset = dernier ? placerSuivant(dernier.chunk, dernier.offset, chunk) : 0;
+    placés.push({ chunk, offset });
+    finPlacée = offset + chunk.width;
+
+    depuisCheckpoint++;
+    if (depuisCheckpoint >= CHUNKS_PAR_CHECKPOINT) {
+      checkpoints.push(finPlacée);
+      depuisCheckpoint = 0;
+    }
+  }
+
+  return {
+    placés,
+    checkpoints,
+    get palier() { return palier; },
+    set palier(p) { palier = Math.max(1, Math.min(5, p)); },
+
+    /** Génère assez de chunks pour couvrir jusqu'à `scroll + marge`. */
+    assurerJusque(scroll, marge = 960) {
+      while (finPlacée < scroll + marge) pousserUnChunk();
+    },
+
+    /** Dernier checkpoint déjà franchi par le rider (0 s'il n'y en a pas). */
+    dernierCheckpointFranchi(scroll) {
+      let dernier = 0;
+      for (const cp of checkpoints) {
+        if (cp > scroll) break;
+        dernier = cp;
+      }
+      return dernier;
+    },
+  };
+}
+
+return { createLevel };
+})();
+__mod["src/data/entities.js"] = (function () {
+// Registre des types d'obstacles et de décor (§6.5).
+//
+// Chaque hitbox est tracée à la main, jamais déduite de la taille du sprite
+// (§3) : les décors sont dessinés en perspective isométrique légère, qui
+// gonfle leur hauteur visuelle bien au-delà de leur encombrement réel au sol.
+// curb.0 dessine par exemple un bloc de 39 px de haut pour un rebord qui ne
+// doit bloquer le rider que sur ses 14 derniers pixels.
+//
+// La classification par famille suit le tableau nommé du §6.5 (curb/cône/
+// borne = bas, poubelle/banc/jardinière/distributeur = haut), pas le seuil
+// « h ≤ 28 px » qu'il donne en regard : ce seuil est une indication de lecture
+// du tableau, pas une règle à vérifier contre des hitbox déjà volontairement
+// réduites — le banc par exemple (37×21 en sprite) est classé « haut » par le
+// tableau nommé alors que 21 px passerait sous le seuil ; sa hitbox est donc
+// portée à 30 px de haut pour rester cohérente avec les deux à la fois.
+//
+// Les collectibles (coins) n'existent pas encore ici : ils arrivent avec le
+// scoring en P4 (§6.6). Le format de chunk les accueillera sans changer de
+// forme le moment venu.
+
+const Family = {
+  LOW: 'LOW',     // Ollie suffit — collision latérale, dessus franchissable
+  HIGH: 'HIGH',    // Flip ou Boost obligatoires
+  GAP: 'GAP',      // Boost obligatoire — chute si abordé au sol
+  RAMP: 'RAMP',    // Jamais de crash — bonus de trajectoire (§6.5)
+  RAIL: 'RAIL',    // Grindable par le dessus, crash par le côté
+  DECOR: 'DECOR',  // Aucune collision — pure profondeur visuelle
+};
+
+const ENTITIES = {
+  // Solide bas — Ollie suffit.
+  curb: { family: Family.LOW, frame: 'curb.0', hitbox: { w: 44, h: 14 } },
+  cone: { family: Family.LOW, frame: 'connector.0', hitbox: { w: 26, h: 18 } },
+  hydrant: { family: Family.LOW, frame: 'street.2', hitbox: { w: 22, h: 22 } },
+
+  // Solide haut — Flip ou Boost.
+  bin: { family: Family.HIGH, frame: 'urban.2', hitbox: { w: 20, h: 32 } },
+  planter: { family: Family.HIGH, frame: 'urban.4', hitbox: { w: 28, h: 34 } },
+  bench: { family: Family.HIGH, frame: 'urban.5', hitbox: { w: 32, h: 30 } },
+  vending: { family: Family.HIGH, frame: 'prop.0', hitbox: { w: 24, h: 40 } },
+
+  // Gap — largeur fournie par le chunk (`w` sur l'entité), pas de sprite :
+  // c'est un trou dans le sol, rendu procéduralement comme le sol lui-même
+  // en attendant les vraies tuiles de P5.
+  gap: { family: Family.GAP, frame: null, hitbox: { w: null, h: 0 } },
+
+  // Rampes — jamais de crash, bonus de trajectoire.
+  quarterpipe: { family: Family.RAMP, frame: 'park.1', hitbox: { w: 40, h: 14 } },
+  stairs: { family: Family.RAMP, frame: 'bonus.3', hitbox: { w: 30, h: 10 } },
+
+  // Rails — grindables par le dessus (mécanique complète en P4).
+  rail: { family: Family.RAIL, frame: 'rail.0', hitbox: { w: 92, h: 10 } },
+  railKinked: { family: Family.RAIL, frame: 'rail.5', hitbox: { w: 90, h: 10 } },
+
+  // Décor — aucune collision.
+  pole: { family: Family.DECOR, frame: 'prop.2' },
+  palm: { family: Family.DECOR, frame: 'atmo.3' },
+  sign: { family: Family.DECOR, frame: 'street.3' },
+};
+
+return { Family, ENTITIES };
+})();
+__mod["src/game/entities.js"] = (function () {
+// Instanciation des entités de niveau à partir des chunks (§6.5, §8).
+//
+// Les chunks ne bougent jamais : ce sont des positions fixes dans l'espace du
+// monde (worldX, en pixels depuis le départ du niveau). C'est le défilement
+// qui fait apparaître et disparaître les entités à l'écran. La liste plate est
+// donc calculée une seule fois, au chargement du niveau — aucune allocation
+// par frame dans la boucle chaude (§14).
+
+const { ENTITIES } = __mod["src/data/entities.js"];
+
+/** Aplatit une séquence de chunks placés (voir game/chunks.js) en entités. */
+function construireEntites(chunksPlaces) {
+  const liste = [];
+  for (const { chunk, offset } of chunksPlaces) {
+    for (const e of chunk.entities) {
+      const def = ENTITIES[e.type];
+      if (!def) throw new Error(`type d'entité inconnu : ${e.type}`);
+      liste.push({
+        type: e.type,
+        family: def.family,
+        frame: def.frame,
+        worldX: offset + e.x,
+        hitbox: { w: e.w ?? def.hitbox.w, h: def.hitbox.h },
+        elevation: e.y || 0, // hauteur au-dessus du sol (rails suspendus, §8)
+      });
+    }
+  }
+  liste.sort((a, b) => a.worldX - b.worldX);
+  return liste;
+}
+
+/**
+ * Sous-ensemble des entités dont le worldX tombe dans [scroll-marge, scroll+marge].
+ * `liste` est triée par worldX et `indexDepart` est le curseur renvoyé par
+ * l'appel précédent : comme le rider n'avance que dans un sens, ce curseur ne
+ * recule jamais et chaque frame ne refiltre qu'une fenêtre, pas tout le niveau.
+ */
+function entitesActives(liste, indexDepart, scroll, marge = 600) {
+  let i = indexDepart;
+  while (i < liste.length && liste[i].worldX < scroll - marge) i++;
+  const actives = [];
+  for (let j = i; j < liste.length && liste[j].worldX < scroll + marge; j++) {
+    actives.push(liste[j]);
+  }
+  return { actives, indexSuivant: i };
+}
+
+return { construireEntites, entitesActives };
+})();
+__mod["src/game/physics.js"] = (function () {
+// Collisions swept AABB entre le rider et les entités de jeu (§6.5).
+//
+// Le rider ne se déplace jamais en X à l'écran : c'est le monde qui défile
+// sous lui (§6.2), player.x reste fixe à 30 % de l'écran. La collision se
+// ramène donc à un test d'intervalle : à quel moment, pendant le pas de
+// simulation, l'intervalle X (mobile, porté par le défilement) de l'entité
+// a-t-il recoupé la bande X (fixe) du rider ? Sans ce test « balayé » — pas
+// seulement échantillonné au début et à la fin du pas — un obstacle pourrait
+// franchir la bande du rider *entre* deux frames à 460+ px/s sans jamais
+// déclencher de collision : c'est le tunneling que le §6.5 demande d'éviter.
+//
+// Vertical, le même principe s'applique en sens inverse : les pieds du rider
+// sont balayés entre prevY et y, comparés à la tranche verticale [sommet, bas]
+// de l'obstacle. Trois issues possibles : passé par-dessus (jamais descendu
+// sous le sommet), passé par-dessous (jamais monté au-dessus du bas — le cas
+// d'un rail élevé sous lequel on roule), ou collision.
+
+const { Family } = __mod["src/data/entities.js"];
+
+const LARGEUR_RIDER = 14; // hitbox du rider, plus étroite que le sprite (§3)
+const TOLERANCE = 2; // px, absorbe les arrondis de rendu
+
+/** Position écran d'une entité à `t` ∈ [0,1] du pas, entre deux positions de scroll. */
+function screenX(worldX, playerX, scrollAvant, scrollApres, direction, t) {
+  const scroll = scrollAvant + (scrollApres - scrollAvant) * t;
+  return playerX + direction * (worldX - scroll);
+}
+
+/** Vrai si l'intervalle X balayé de l'entité a pu croiser la bande du rider. */
+function balayageX(entity, playerX, scrollAvant, scrollApres, direction) {
+  const demiLargeur = entity.hitbox.w / 2;
+  const x0 = screenX(entity.worldX, playerX, scrollAvant, scrollApres, direction, 0) - demiLargeur;
+  const x1 = screenX(entity.worldX, playerX, scrollAvant, scrollApres, direction, 1) - demiLargeur;
+  const xMin = Math.min(x0, x1);
+  const xMax = Math.max(x0, x1) + entity.hitbox.w;
+  const pMin = playerX - LARGEUR_RIDER / 2;
+  const pMax = playerX + LARGEUR_RIDER / 2;
+  return xMin < pMax && xMax > pMin;
+}
+
+/**
+ * Résout la collision rider/entité pour ce pas de simulation.
+ * @param {number} scrollAvant  défilement du monde au début du pas
+ * @param {number} scrollApres  défilement du monde à la fin du pas
+ * @returns {'none'|'crash'|'ramp'|'clear'}
+ *   none  — aucun contact
+ *   crash — collision, §6.7
+ *   ramp  — contact avec une rampe : bonus de trajectoire, jamais de crash
+ *   clear — franchi sans dommage (par-dessus un solide/rail, par-dessous un rail élevé)
+ */
+function resoudre(entity, player, solY, scrollAvant, scrollApres) {
+  if (entity.family === Family.DECOR) return 'none';
+  if (!balayageX(entity, player.x, scrollAvant, scrollApres, player.direction)) {
+    return 'none';
+  }
+
+  if (entity.family === Family.GAP) {
+    // §6.5 : tomber dedans exige d'être au sol ; un saut par-dessus n'y touche pas.
+    return player.auSol && player.y >= solY - TOLERANCE ? 'crash' : 'none';
+  }
+
+  const bas = solY - (entity.elevation || 0);
+  const piedsMax = Math.max(player.prevY, player.y); // point le plus bas atteint pendant le pas
+
+  if (entity.family === Family.RAMP) {
+    // Contact seulement si le rider est proche du sol/de la rampe — survoler
+    // sa tranche X en plein vol ne déclenche pas le bonus.
+    return piedsMax >= bas - TOLERANCE ? 'ramp' : 'none';
+  }
+
+  // LOW, HIGH, RAIL : trois issues selon où sont passés les pieds pendant le pas.
+  const sommet = bas - entity.hitbox.h;
+  const piedsMin = Math.min(player.prevY, player.y); // point le plus haut atteint pendant le pas
+  if (piedsMax <= sommet + TOLERANCE) return 'clear'; // resté au-dessus tout le pas
+
+  // « Passé par-dessous » n'a de sens que s'il existe un vrai espace physique
+  // sous l'obstacle (elevation > 0, un rail suspendu par exemple). Un obstacle
+  // posé au sol a bas === solY : un rider au sol a alors piedsMin === bas à
+  // l'exacte tolérance près, ce qui validerait à tort "passé dessous" pour un
+  // simple curb qu'on n'a pas sauté.
+  if (entity.elevation > 0 && piedsMin >= bas - TOLERANCE) return 'clear';
+
+  return 'crash';
+}
+
+return { LARGEUR_RIDER, resoudre };
+})();
 __mod["src/main.js"] = (function () {
 // Maxence Rider — amorçage.
 
 const { createLoop } = __mod["src/core/loop.js"];
 const { createInput, Action } = __mod["src/core/input.js"];
-const { loadAssets, atlas } = __mod["src/core/assets.js"];
+const { loadAssets, atlas, frame: frameInfo } = __mod["src/core/assets.js"];
+const { mulberry32 } = __mod["src/core/rng.js"];
 const { createRenderer } = __mod["src/render/renderer.js"];
-const { drawFrame } = __mod["src/render/sprite.js"];
+const { drawFrame, flipPourDirection } = __mod["src/render/sprite.js"];
 const { createStateMachine, State } = __mod["src/game/state.js"];
 const { createPlayer, RiderState } = __mod["src/game/player.js"];
+const { createLevel } = __mod["src/game/level.js"];
+const { construireEntites, entitesActives } = __mod["src/game/entities.js"];
+const { resoudre } = __mod["src/game/physics.js"];
+const { Family, ENTITIES } = __mod["src/data/entities.js"];
 
 const DEBUG = new URLSearchParams(location.search).has('debug');
 
@@ -3472,56 +4005,203 @@ const renderer = createRenderer(canvas);
 const { ctx, view } = renderer;
 
 const SOL = 40; // hauteur du sol depuis le bas de l'espace virtuel
+const MARGE_VUE = 80; // px hors écran avant de considérer une entité invisible
 
 const player = createPlayer({ rider: 'skate', direction: 1 });
-const monde = { defilement: 0 };
+const monde = { defilement: 0, prevDefilement: 0 };
+
+const BONUS_RAMPE = 1.4; // §6.5
+
+// §6.7 : 3 vies, checkpoints tous les 5 chunks, invincibilité 1,2 s au respawn.
+const run = {
+  vies: 3,
+  invincibleJusque: 0, // en secondes de jeu écoulées (tempsTotal)
+  tempsTotal: 0,
+  seed: (Date.now() % 0xffffffff) >>> 0,
+};
+
+let level = null;
+let entites = [];
+let curseurEntites = 0;
 
 function solY() {
   return view.h - SOL;
 }
 
-function reinitialiser() {
+function nouvelleSeed() {
+  return (Date.now() % 0xffffffff) >>> 0;
+}
+
+function demarrerRun(seed = nouvelleSeed(), { obstacles = true } = {}) {
+  run.seed = seed;
+  run.vies = 3;
+  run.invincibleJusque = 0;
+  run.tempsTotal = 0;
+
+  level = createLevel({ rng: mulberry32(seed) });
+  level.assurerJusque(0);
+  // `obstacles: false` sert aux tests de physique pure (sauts, coyote time…) :
+  // sans lui, un test qui avance des dizaines de frames finirait par heurter
+  // un vrai obstacle du niveau généré, pour une raison qui n'a rien à voir
+  // avec ce qu'il vérifie.
+  entites = obstacles ? construireEntites(level.placés) : [];
+  curseurEntites = 0;
+
   player.poser(Math.round(view.w * 0.3), solY());
   player.tempsCourse = 0;
   player.distance = 0;
+  player.bonusRampe = 1;
   monde.defilement = 0;
+  monde.prevDefilement = 0;
+}
+
+/** Repositionne le rider au dernier checkpoint franchi, invincibilité brève. */
+function respawn() {
+  const cible = level.dernierCheckpointFranchi(monde.defilement);
+  monde.defilement = cible;
+  monde.prevDefilement = cible;
+  player.poser(Math.round(view.w * 0.3), solY());
+  player.bonusRampe = 1;
+  run.invincibleJusque = run.tempsTotal + 1.2;
+  // Un respawn peut faire reculer le défilement : le curseur d'entités actives
+  // n'est valide que pour un défilement croissant (game/entities.js), il faut
+  // le réarmer pour qu'il puisse revoir les entités déjà dépassées.
+  curseurEntites = 0;
+}
+
+function majCollisions(scrollAvant, scrollApres) {
+  if (run.tempsTotal < run.invincibleJusque) return; // §6.7 : invincibilité au respawn
+
+  const { actives, indexSuivant } = entitesActives(entites, curseurEntites, monde.defilement, 600);
+  curseurEntites = indexSuivant;
+
+  for (const entite of actives) {
+    const resultat = resoudre(entite, player, solY(), scrollAvant, scrollApres);
+    if (resultat === 'crash') {
+      player.crasher();
+      return;
+    }
+    if (resultat === 'ramp') {
+      player.bonusRampe = BONUS_RAMPE;
+    }
+  }
 }
 
 function majJeu(dt) {
   input.update();
+
+  run.tempsTotal += dt;
+  monde.prevDefilement = monde.defilement;
+
+  const scrollAvant = monde.defilement;
   player.update(dt, { input, solY: solY() });
 
-  // §6.2 : le rider avance tout seul ; c'est le monde qui défile sous lui.
-  monde.defilement += player.vitesse * player.direction * dt;
+  if (player.state !== RiderState.CRASH) {
+    // Toujours croissant : c'est une distance parcourue, pas une coordonnée
+    // écran. Le sens visuel (§6.2 : niveaux impairs à droite, pairs à gauche)
+    // n'intervient que dans la projection monde→écran (screenXDe), jamais ici
+    // — sinon un niveau "vers la gauche" ferait reculer le défilement, et
+    // game/level.js ne saurait plus jusqu'où générer de nouveaux chunks.
+    monde.defilement += player.vitesse * dt;
+  }
   player.x = Math.round(view.w * 0.3);
   player.prevX = player.x;
 
-  if (input.consume(Action.RESTART)) reinitialiser();
+  level.assurerJusque(monde.defilement);
+  // Le niveau peut avoir généré de nouveaux chunks : la liste plate d'entités
+  // doit suivre (§14 : reconstruite seulement quand du contenu neuf apparaît,
+  // pas à chaque frame).
+  if (entites.length < level.placés.reduce((n, p) => n + p.chunk.entities.length, 0)) {
+    entites = construireEntites(level.placés);
+  }
+
+  if (player.state === RiderState.CRASH) {
+    if (player.crashTermine) {
+      run.vies--;
+      if (run.vies <= 0) jeu.go(State.GAMEOVER);
+      else respawn();
+    }
+  } else {
+    majCollisions(scrollAvant, monde.defilement);
+  }
+
+  if (input.consume(Action.RESTART)) demarrerRun();
 }
 
-function dessinerJeu(alpha) {
-  const y = player.prevY + (player.y - player.prevY) * alpha;
-  const sol = solY();
+// ── Rendu ────────────────────────────────────────────────────────────────────
 
-  ctx.fillStyle = '#1b1d27';
-  ctx.fillRect(0, 0, view.w, view.h);
+function screenXDe(worldX, scroll) {
+  return player.x + player.direction * (worldX - scroll);
+}
 
-  // Sol provisoire : les vraies tuiles et le décor arrivent en P3/P5.
+function dessinerSol(sol, scroll) {
   ctx.fillStyle = '#2a2c3a';
   ctx.fillRect(0, sol, view.w, view.h - sol);
   ctx.fillStyle = '#3a3d4e';
   const pas = 32;
-  const decalage = ((monde.defilement % pas) + pas) % pas;
+  const decalage = (((scroll * player.direction) % pas) + pas) % pas;
   for (let sx = -decalage; sx < view.w; sx += pas) {
     ctx.fillRect(Math.round(sx), sol, 1, view.h - sol);
   }
   ctx.fillStyle = '#4ed4c4';
   ctx.fillRect(0, sol, view.w, 1);
+}
 
-  drawFrame(ctx, player.frameKey(), player.x, y, {
-    flip: player.direction < 0,
-    scaleY: player.squash,
-  });
+/** Trou dans le sol : procédural, comme le sol lui-même (les vraies tuiles
+ * de terrain arrivent en P5, voir §6.5 famille GAP dans data/entities.js). */
+function dessinerGap(entite, sol, scroll) {
+  const x = screenXDe(entite.worldX, scroll);
+  const w = entite.hitbox.w;
+  ctx.fillStyle = '#0c0d12';
+  ctx.fillRect(Math.round(x - w / 2), sol, w, view.h - sol);
+}
+
+function dessinerEntites(sol, scroll) {
+  const { actives } = entitesActives(entites, 0, scroll, view.w / 2 + MARGE_VUE);
+  for (const entite of actives) {
+    const x = screenXDe(entite.worldX, scroll);
+    if (x < -MARGE_VUE || x > view.w + MARGE_VUE) continue;
+
+    if (entite.family === Family.GAP) {
+      dessinerGap(entite, sol, scroll);
+      continue;
+    }
+    const info = frameInfo(entite.frame);
+    if (!info) continue;
+    drawFrame(ctx, entite.frame, x, sol - entite.elevation, {
+      flip: flipPourDirection(player.direction),
+    });
+
+    if (DEBUG) {
+      const bas = sol - entite.elevation;
+      const sommet = bas - entite.hitbox.h;
+      ctx.strokeStyle = entite.family === Family.RAMP ? 'rgba(78,212,196,0.8)' : 'rgba(255,92,58,0.8)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x - entite.hitbox.w / 2 + 0.5, sommet + 0.5, entite.hitbox.w - 1, entite.hitbox.h - 1);
+    }
+  }
+}
+
+function dessinerJeu(alpha) {
+  const y = player.prevY + (player.y - player.prevY) * alpha;
+  const scroll = monde.prevDefilement + (monde.defilement - monde.prevDefilement) * alpha;
+  const sol = solY();
+
+  ctx.fillStyle = '#1b1d27';
+  ctx.fillRect(0, 0, view.w, view.h);
+
+  dessinerSol(sol, scroll);
+  dessinerEntites(sol, scroll);
+
+  const invincible = run.tempsTotal < run.invincibleJusque;
+  // Clignotement pendant l'invincibilité post-respawn (§6.7).
+  const visible = !invincible || Math.floor(run.tempsTotal * 12) % 2 === 0;
+  if (visible) {
+    drawFrame(ctx, player.frameKey(), player.x, y, {
+      flip: flipPourDirection(player.direction),
+      scaleY: player.squash,
+    });
+  }
 
   if (DEBUG) {
     ctx.fillStyle = 'rgba(255,201,60,0.9)';
@@ -3549,6 +4229,25 @@ const jeu = createStateMachine(State.BOOT, {
       texteCentre('Reprendre : Échap, P, ou le bouton', view.h / 2 + 10, '#8a8d9e');
     },
   },
+  // Écran minimal pour P3 : la présentation « sticker » complète arrive en P6.
+  [State.GAMEOVER]: {
+    enter: () => { input.clear(); },
+    update: () => {
+      input.update();
+      if (input.consume(Action.RESTART) || input.consume(Action.CONFIRM)) {
+        demarrerRun();
+        jeu.go(State.PLAY);
+      }
+    },
+    render: (alpha) => {
+      dessinerJeu(alpha);
+      ctx.fillStyle = 'rgba(18,19,26,0.82)';
+      ctx.fillRect(0, 0, view.w, view.h);
+      texteCentre('GAME OVER', view.h / 2 - 8, '#ff5c3a');
+      texteCentre(`Distance : ${(player.distance / 10).toFixed(0)} m`, view.h / 2 + 4, '#f2f0e6');
+      texteCentre('R pour recommencer', view.h / 2 + 16, '#8a8d9e');
+    },
+  },
 });
 
 function texteCentre(texte, y, couleur) {
@@ -3562,6 +4261,7 @@ function texteCentre(texte, y, couleur) {
 function basculerPause() {
   if (jeu.is(State.PLAY)) jeu.go(State.PAUSE);
   else if (jeu.is(State.PAUSE)) jeu.go(State.PLAY);
+  else return;
   boutonPause.textContent = jeu.is(State.PAUSE) ? '▶' : 'II';
   boutonPause.setAttribute('aria-label', jeu.is(State.PAUSE) ? 'Reprendre' : 'Pause');
 }
@@ -3612,13 +4312,15 @@ function dessinerDebug() {
     `${view.w}x${view.h} x${view.scale} ${view.portrait ? 'portrait' : 'paysage'}`,
     `${player.state} ${player.frameKey()}`,
     `v ${player.vitesse.toFixed(0)} px/s · ${(player.distance / 10).toFixed(0)} m`,
+    `palier ${level?.palier ?? '-'} · vies ${run.vies} · cp ${level?.checkpoints.length ?? 0}`,
+    `entités ${entites.length} · seed ${run.seed}`,
     player.state === RiderState.AIR ? `vol ${player.tempsVol.toFixed(2)}s` : '',
   ].filter(Boolean);
   ctx.font = '6px ui-monospace, monospace';
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
   ctx.fillStyle = 'rgba(18,19,26,0.7)';
-  ctx.fillRect(2, 2, 120, lignes.length * 8 + 4);
+  ctx.fillRect(2, 2, 140, lignes.length * 8 + 4);
   ctx.fillStyle = '#ffc93c';
   lignes.forEach((l, i) => ctx.fillText(l, 5, 6 + i * 8));
 }
@@ -3627,15 +4329,18 @@ function dessinerDebug() {
 
 if (DEBUG) {
   window.__maxence = {
-    player, monde, view, jeu, boucle, input, atlas,
-    Action, State, RiderState, solY,
+    player, monde, view, jeu, boucle, input, atlas, run,
+    Action, State, RiderState, Family, ENTITIES, solY,
+    get level() { return level; },
+    get entites() { return entites; },
+    demarrerRun, respawn,
   };
 }
 
 loadAssets()
   .then(() => {
     chargement.hidden = true;
-    reinitialiser();
+    demarrerRun();
     jeu.go(State.PLAY);
     boucle.start();
   })

@@ -117,6 +117,18 @@ class Context2D {
   lineTo() {}
   stroke() {}
 
+  /** Contour non rempli : assez pour les hitbox de debug, pas d'anti-aliasing. */
+  strokeRect(x, y, w, h) {
+    const [r, g, b, a] = parseColor(this.strokeStyle);
+    const alpha = a * this.globalAlpha;
+    const p0 = this._toScreen(x, y);
+    const p1 = this._toScreen(x + w, y + h);
+    const x0 = Math.round(Math.min(p0.x, p1.x)), x1 = Math.round(Math.max(p0.x, p1.x));
+    const y0 = Math.round(Math.min(p0.y, p1.y)), y1 = Math.round(Math.max(p0.y, p1.y));
+    for (let px = x0; px < x1; px++) { this._blend(px, y0, r, g, b, alpha); this._blend(px, y1 - 1, r, g, b, alpha); }
+    for (let py = y0; py < y1; py++) { this._blend(x0, py, r, g, b, alpha); this._blend(x1 - 1, py, r, g, b, alpha); }
+  }
+
   clip() {
     if (!this._path) return;
     const { x, y, w, h } = this._path;

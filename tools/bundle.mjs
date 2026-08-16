@@ -59,10 +59,10 @@ function analyser(fichier) {
       analyser(cible);
       const cibleId = relative(ROOT, cible).split('\\').join('/');
       if (nommé) {
-        const noms = nommé[1].split(',').map((s) => s.trim()).filter(Boolean);
-        for (const nom of noms) {
-          if (nom.includes(' as ')) throw new Error(`${id} : « import … as » non géré (${nom})`);
-        }
+        // `import { x as y }` est la même chose qu'une déstructuration
+        // `const { x: y } = ...` — la syntaxe JS le permet nativement.
+        const noms = nommé[1].split(',').map((s) => s.trim()).filter(Boolean)
+          .map((n) => n.replace(/\s+as\s+/, ': '));
         corps.push(`const { ${noms.join(', ')} } = __mod[${JSON.stringify(cibleId)}];`);
       } else {
         corps.push(`const ${defaut[1]} = __mod[${JSON.stringify(cibleId)}].default;`);

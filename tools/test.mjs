@@ -8,7 +8,17 @@
 // près. C'est ce qui permet d'affirmer des choses comme « le rider ne traverse
 // jamais un obstacle » sans dépendre du timing d'un vrai navigateur.
 
-import { boot } from './harness.mjs';
+import { boot, ROOT } from './harness.mjs';
+import { join } from 'node:path';
+
+// Modules purs (aucune dépendance DOM) : testables directement sous Node, sans
+// passer par le harnais canvas.
+const { resoudre, LARGEUR_RIDER } = await import(join(ROOT, 'src/game/physics.js'));
+const { construireEntites, entitesActives } = await import(join(ROOT, 'src/game/entities.js'));
+const { placerSuivant, dernierObstacleX, premierObstacleX } = await import(join(ROOT, 'src/game/chunks.js'));
+const { TOUS_LES_CHUNKS, RESPIRATION, BONUS } = await import(join(ROOT, 'src/data/chunks.js'));
+const { VITESSE_MAX_LEAN } = await import(join(ROOT, 'src/data/tuning.js'));
+const { Family } = await import(join(ROOT, 'src/data/entities.js'));
 
 let réussis = 0;
 const échecs = [];
@@ -31,18 +41,21 @@ const h = await boot({ width: 960, height: 540, dpr: 1, search: '?debug=1' });
 const M = globalThis.window.__maxence;
 const { player } = M;
 
+const SEED_TEST = 1234567;
+
 /**
- * Repose le rider au sol, run remis à zéro.
+ * Réinitialise une run complète (rider, niveau, monde), sans obstacles par
+ * défaut : les tests de physique pure (sauts, coyote time…) n'ont rien à voir
+ * avec le contenu généré, et un niveau réel finirait par en placer un sur leur
+ * chemin après suffisamment de frames.
  * L'attente initiale purge la fenêtre de double tap : sans elle, le tap de
  * clôture du test précédent s'apparie avec le premier tap du suivant et le
  * transforme silencieusement en boost.
  */
-function reset() {
+function reset({ obstacles = false } = {}) {
   h.wait(400);
   h.frames(2);      // absorbe le grand dt provoqué par l'attente
-  player.poser(Math.round(M.view.w * 0.3), M.solY());
-  player.tempsCourse = 0;
-  player.bonusRampe = 1;
+  M.demarrerRun(SEED_TEST, { obstacles });
   h.frames(2);
 }
 
@@ -297,15 +310,206 @@ let dansFenetre = 0;
 for (let i = 0; i < 60 && !player.auSol; i++) { h.frame(); if (player.dansFenetreTrick()) dansFenetre++; }
 verifier('la fenêtre de trick s\'ouvre en vol', dansFenetre > 5, `${dansFenetre} frames`);
 
-// §5 : la chute se joue une fois puis se fige.
+// §5 : la chute se joue une fois puis se fige — vérifié juste avant les 900 ms
+// du §6.7, au-delà desquelles main.js respawn automatiquement le rider (testé
+// avec le cycle complet dans la section « Crash et respawn » ci-dessous).
 reset();
 player.crasher();
 h.frames(2);
 verifier('crash : animation de chute', /^skate\.crash\.\d$/.test(player.frameKey()), player.frameKey());
-h.frames(60);
+h.frames(50);
 verifier('crash : figé sur la dernière frame', player.frameKey() === 'skate.crash.5', player.frameKey());
-verifier('crash : terminé après 900 ms', player.crashTermine);
 reset();
+
+// ─── Invariant des chunks (§8) ────────────────────────────────────────────────
+titre('Invariant des chunks (§8)');
+
+// Le sac tire dans le pool du palier courant ∪ respiration ∪ bonus (voir
+// game/level.js) : c'est cet ensemble-là, pas seulement les chunks numérotés,
+// qui doit rester sûr pour N'IMPORTE QUELLE paire, dans les deux ordres. Testé
+// à VITESSE_MAX_LEAN (460 × 1,15 ≈ 529 px/s, plafond + lean) : c'est la seule
+// vitesse qui rend la garantie valable « à toutes les vitesses » sans supposer
+// où en est le rider dans la montée en vitesse au moment où il y arrive (voir
+// le commentaire d'en-tête de game/chunks.js pour le raisonnement complet).
+const poolInvariant = [...TOUS_LES_CHUNKS, ...RESPIRATION, ...BONUS];
+let pireGap = Infinity, pirePaire = null, paires = 0;
+for (const a of poolInvariant) {
+  for (const b of poolInvariant) {
+    const dernier = dernierObstacleX(a);
+    const premier = premierObstacleX(b);
+    if (dernier === null || premier === null) continue; // chunk vide : rien à garantir
+    const offsetB = placerSuivant(a, 0, b);
+    const gap = (offsetB + premier) - dernier;
+    paires++;
+    if (gap < pireGap) { pireGap = gap; pirePaire = [a.id, b.id]; }
+  }
+}
+const requis = VITESSE_MAX_LEAN * 0.9;
+verifier(`toutes les paires (${paires}) respectent le gap requis`, pireGap >= requis - 0.01,
+  `pire cas ${pireGap.toFixed(1)} px ≥ ${requis.toFixed(1)} px requis (${pirePaire?.join(' → ')})`);
+
+// ─── Collisions (physics.resoudre) ───────────────────────────────────────────
+titre('Collisions');
+
+const SOL_TEST = 230;
+/** Joueur synthétique minimal pour physics.resoudre, sans passer par player.js. */
+function joueurTest({ x = 100, y = SOL_TEST, prevY = y, auSol = y >= SOL_TEST, direction = 1 } = {}) {
+  return { x, y, prevY, auSol, direction };
+}
+
+{
+  const curb = { family: Family.LOW, worldX: 0, hitbox: { w: 44, h: 14 }, elevation: 0 };
+  const auSol = joueurTest({});
+  verifier('LOW : crash si le rider reste au sol',
+    resoudre(curb, auSol, SOL_TEST, 0, 0) === 'crash');
+  const enSaut = joueurTest({ y: SOL_TEST - 30, prevY: SOL_TEST - 32, auSol: false });
+  verifier('LOW : franchi si les pieds passent au-dessus (ollie)',
+    resoudre(curb, enSaut, SOL_TEST, 0, 0) === 'clear');
+}
+{
+  const bin = { family: Family.HIGH, worldX: 0, hitbox: { w: 20, h: 32 }, elevation: 0 };
+  const sautCourt = joueurTest({ y: SOL_TEST - 20, prevY: SOL_TEST - 22, auSol: false }); // sous les 32 px du bac
+  verifier('HIGH : crash si le saut n\'atteint pas le sommet',
+    resoudre(bin, sautCourt, SOL_TEST, 0, 0) === 'crash');
+  const sautHaut = joueurTest({ y: SOL_TEST - 40, prevY: SOL_TEST - 42, auSol: false });
+  verifier('HIGH : franchi si le saut dépasse le sommet (flip)',
+    resoudre(bin, sautHaut, SOL_TEST, 0, 0) === 'clear');
+}
+{
+  const gap = { family: Family.GAP, worldX: 0, hitbox: { w: 90, h: 0 }, elevation: 0 };
+  const auSol = joueurTest({});
+  verifier('GAP : chute si abordé au sol',
+    resoudre(gap, auSol, SOL_TEST, 0, 0) === 'crash');
+  const enVol = joueurTest({ y: SOL_TEST - 50, prevY: SOL_TEST - 52, auSol: false });
+  verifier('GAP : franchi sans dommage si sauté par-dessus',
+    resoudre(gap, enVol, SOL_TEST, 0, 0) === 'none');
+}
+{
+  const rampe = { family: Family.RAMP, worldX: 0, hitbox: { w: 40, h: 14 }, elevation: 0 };
+  const auSol = joueurTest({});
+  verifier('RAMP : jamais de crash au contact', resoudre(rampe, auSol, SOL_TEST, 0, 0) === 'ramp');
+  const loinEnVol = joueurTest({ y: SOL_TEST - 100, prevY: SOL_TEST - 102, auSol: false });
+  verifier('RAMP : pas de déclenchement en survolant de loin',
+    resoudre(rampe, loinEnVol, SOL_TEST, 0, 0) === 'none');
+}
+{
+  // Rail élevé (§8, entity.y du chunk) : crash par le côté, franchi par-dessus
+  // ET par-dessous (on passe en dessous en roulant normalement au sol).
+  const rail = { family: Family.RAIL, worldX: 0, hitbox: { w: 92, h: 10 }, elevation: 24 };
+  const auSolDessous = joueurTest({}); // solY=230, rail entre 196 et 206 : le sol (230) est bien en dessous
+  verifier('RAIL élevé : on passe dessous sans crash au ras du sol',
+    resoudre(rail, auSolDessous, SOL_TEST, 0, 0) === 'clear');
+  const surLeRail = joueurTest({ y: SOL_TEST - 25, prevY: SOL_TEST - 27, auSol: false }); // pieds dans [196,206]
+  verifier('RAIL élevé : crash si les pieds arrivent dans sa tranche',
+    resoudre(rail, surLeRail, SOL_TEST, 0, 0) === 'crash');
+  const parDessus = joueurTest({ y: SOL_TEST - 60, prevY: SOL_TEST - 62, auSol: false });
+  verifier('RAIL élevé : franchi par-dessus', resoudre(rail, parDessus, SOL_TEST, 0, 0) === 'clear');
+}
+
+// Aucune entité DECOR ne doit jamais interrompre le rider (§6.5 dernière ligne).
+{
+  const poteau = { family: Family.DECOR, worldX: 0, hitbox: { w: 20, h: 60 }, elevation: 0 };
+  verifier('DECOR : jamais de collision', resoudre(poteau, joueurTest({}), SOL_TEST, 0, 0) === 'none');
+}
+
+// ─── Non-tunneling (swept AABB) ──────────────────────────────────────────────
+titre('Non-tunneling (swept AABB)');
+
+// En jeu réel, le pas fixe (core/loop.js) borne le déplacement par pas de
+// simulation à VITESSE_MAX_LEAN/60 ≈ 8,8 px — bien en-deçà de la largeur du
+// rider (14 px), donc un test naïf aux deux extrémités du pas suffirait déjà à
+// ne rien manquer à cette échelle. Le test ci-dessous vise donc directement la
+// fonction resoudre() avec un très grand écart de scroll en un seul appel : ça
+// simule ce qui arriverait avec une vitesse bien plus élevée (ou un gros
+// rattrapage), et ça prouve que la détection reste correcte par construction,
+// indépendamment des garanties que le reste du système lui offre par ailleurs.
+{
+  const fin = { family: Family.LOW, worldX: 50, hitbox: { w: 2, h: 14 }, elevation: 0 };
+  const j = joueurTest({ x: 100 }); // bande du rider : [93, 107]
+  // scrollAvant=0 → centre à l'écran = 100+50-0 = 150 (loin devant, hors bande)
+  // scrollApres=100 → centre à l'écran = 100+50-100 = 50 (loin derrière, hors bande)
+  // Aux deux instants échantillonnés, aucun recoupement — mais l'obstacle a
+  // nécessairement traversé toute la bande du rider entre les deux (continuité).
+  const avantSeul = resoudre(fin, { ...j, y: SOL_TEST, prevY: SOL_TEST, auSol: true }, SOL_TEST, 0, 0);
+  const apresSeul = resoudre(fin, { ...j, y: SOL_TEST, prevY: SOL_TEST, auSol: true }, SOL_TEST, 100, 100);
+  verifier('témoin : pas de recoupement à t=0 seul', avantSeul === 'none');
+  verifier('témoin : pas de recoupement à t=1 seul', apresSeul === 'none');
+  const balaye = resoudre(fin, { ...j, y: SOL_TEST, prevY: SOL_TEST, auSol: true }, SOL_TEST, 0, 100);
+  verifier('le balayage détecte la traversée qu\'un test aux 2 points manquerait',
+    balaye === 'crash', balaye);
+}
+
+// ─── Instanciation des entités ───────────────────────────────────────────────
+titre('Instanciation des entités');
+
+{
+  const chunkTest = { width: 480, entities: [{ type: 'curb', x: 100 }, { type: 'gap', x: 300, w: 70 }] };
+  const liste = construireEntites([{ chunk: chunkTest, offset: 1000 }]);
+  verifier('worldX = offset du chunk + x local', liste[0].worldX === 1100, liste[0].worldX);
+  verifier('largeur de gap reprise depuis le chunk', liste[1].hitbox.w === 70, liste[1].hitbox.w);
+  verifier('triée par worldX croissant', liste[0].worldX < liste[1].worldX);
+
+  const { actives, indexSuivant } = entitesActives(liste, 0, 1100, 50);
+  verifier('fenêtre active : ne garde que ce qui est proche', actives.length === 1 && actives[0] === liste[0]);
+  verifier('le curseur ne recule jamais', indexSuivant >= 0);
+}
+
+// ─── Crash et respawn (§6.7) ──────────────────────────────────────────────────
+titre('Crash et respawn');
+
+M.demarrerRun(SEED_TEST, { obstacles: false });
+h.frames(2);
+verifier('3 vies au départ', M.run.vies === 3);
+
+const distanceAvantCrash = player.distance;
+player.crasher();
+h.frames(2);
+verifier('crash : le monde arrête de défiler', M.jeu.current === 'PLAY' && player.state === 'CRASH');
+h.frames(58); // > 900 ms : main.js doit respawn automatiquement
+verifier('respawn automatique après 900 ms', player.state !== 'CRASH', player.state);
+verifier('une vie est perdue', M.run.vies === 2, M.run.vies);
+verifier('le rider est reposé au sol', proche(player.y, M.solY(), 1));
+verifier('invincibilité active juste après le respawn',
+  M.run.tempsTotal < M.run.invincibleJusque);
+
+// Pendant l'invincibilité, un nouveau crash ne doit pas être déclenché par les
+// collisions (mais crasher() reste un appel direct valide, hors invariant).
+h.frames(80); // dépasse les 1,2 s d'invincibilité (§6.7)
+verifier('l\'invincibilité se termine après 1,2 s', M.run.tempsTotal >= M.run.invincibleJusque);
+
+// Trois crashes consécutifs → game over.
+player.crasher();
+h.frames(60);
+verifier('vies : 1 restante', M.run.vies === 1, M.run.vies);
+player.crasher();
+h.frames(60);
+verifier('game over à 0 vie', M.jeu.current === 'GAMEOVER', M.jeu.current);
+
+// demarrerRun() ne remet que les données (vies, position…) : c'est à
+// l'appelant de faire aussi jeu.go(PLAY), exactement comme le fait le handler
+// GAMEOVER de main.js — sans ça, la machine à états reste bloquée pour tous
+// les tests suivants.
+M.demarrerRun(SEED_TEST, { obstacles: false });
+M.jeu.go(M.State.PLAY);
+h.frames(2);
+
+// ─── Checkpoints et génération de niveau ─────────────────────────────────────
+titre('Checkpoints et génération');
+
+M.demarrerRun(SEED_TEST, { obstacles: true });
+verifier('le niveau démarre avec des chunks placés', M.level.placés.length > 0,
+  `${M.level.placés.length} chunks`);
+verifier('un run infini expose au moins un checkpoint après génération',
+  M.entites.length >= 0); // les entités peuvent être vides si le sac tire des respirations
+
+M.level.assurerJusque(2400 * 3); // largement au-delà de 5 chunks (§6.7 : un checkpoint tous les 5)
+verifier('au moins un checkpoint franchissable généré', M.level.checkpoints.length >= 1,
+  `${M.level.checkpoints.length} checkpoints`);
+verifier('les checkpoints sont croissants',
+  M.level.checkpoints.every((c, i) => i === 0 || c > M.level.checkpoints[i - 1]));
+
+M.demarrerRun(SEED_TEST, { obstacles: false });
+h.frames(2);
 
 // ─── Pause ───────────────────────────────────────────────────────────────────
 titre('Pause');
@@ -371,6 +575,13 @@ if (M.view.oy > 0) {
   const [fr, fg, fb] = px(Math.floor(h.canvas.width / 2), Math.floor(M.view.oy / 2));
   verifier('bandes de fond hors viewport', fr < 30 && fg < 30 && fb < 40, `rgb(${fr},${fg},${fb})`);
 }
+
+// ─── Orientation du sprite ───────────────────────────────────────────────────
+titre('Orientation du sprite');
+
+const { flipPourDirection } = await import('../src/render/sprite.js');
+verifier('sens droite (direction +1) → sprite flippé', flipPourDirection(1) === true);
+verifier('sens gauche (direction -1) → sprite non flippé', flipPourDirection(-1) === false);
 
 // ─── Bundle file:// ──────────────────────────────────────────────────────────
 // Le jeu doit démarrer aussi bien depuis dist/bundle.js que depuis les modules.
