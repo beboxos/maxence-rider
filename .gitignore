@@ -1,0 +1,7 @@
+# Artefacts AppleDouble des volumes exFAT/FAT
+._*
+.DS_Store
+
+# Planches de contrôle régénérables (node tools/contact.mjs)
+tools/contact.png
+tools/*_contact.png

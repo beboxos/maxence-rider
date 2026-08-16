@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Maxence Rider — contrôle des frames découpées</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; padding: 24px 20px 60px;
+    background: #12131a; color: #f2f0e6;
+    font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  h1 { font-size: 18px; letter-spacing: .12em; text-transform: uppercase; margin: 0 0 4px; }
+  h2 {
+    font-size: 13px; letter-spacing: .16em; text-transform: uppercase;
+    color: #4ed4c4; margin: 34px 0 10px; padding-bottom: 6px;
+    border-bottom: 1px solid #2a2c3a;
+  }
+  .meta { color: #8a8d9e; margin-bottom: 8px; }
+  .bar { position: sticky; top: 0; z-index: 5; background: #12131a; padding: 10px 0; border-bottom: 1px solid #2a2c3a; }
+  label { margin-right: 18px; color: #8a8d9e; }
+  .grid { display: flex; flex-wrap: wrap; gap: 10px; }
+  figure {
+    margin: 0; padding: 6px; background: #1b1d27; border: 1px solid #2a2c3a; border-radius: 4px;
+    display: flex; flex-direction: column; align-items: center; gap: 4px;
+  }
+  .cell {
+    display: grid; place-items: center; position: relative;
+    background-image:
+      linear-gradient(45deg, #23252f 25%, transparent 25%),
+      linear-gradient(-45deg, #23252f 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, #23252f 75%),
+      linear-gradient(-45deg, transparent 75%, #23252f 75%);
+    background-size: 12px 12px;
+    background-position: 0 0, 0 6px, 6px -6px, -6px 0;
+  }
+  .cell img { image-rendering: pixelated; display: block; }
+  figcaption { font-size: 11px; color: #8a8d9e; max-width: 150px; text-align: center; word-break: break-all; }
+  figcaption b { color: #ffc93c; font-weight: normal; }
+  .anims { display: flex; flex-wrap: wrap; gap: 14px; }
+  .anim { background: #1b1d27; border: 1px solid #2a2c3a; border-radius: 4px; padding: 8px; text-align: center; }
+  .anim canvas { image-rendering: pixelated; background: #23252f; display: block; }
+  .anim span { font-size: 11px; color: #ffc93c; }
+  .err { color: #ff5c3a; }
+</style>
+</head>
+<body>
+<h1>Maxence Rider — frames découpées</h1>
+<p class="meta" id="meta">chargement…</p>
+
+<div class="bar">
+  <label><input type="checkbox" id="anchor" checked> montrer l'ancre (point rouge = origine au sol)</label>
+  <label>zoom <input type="range" id="zoom" min="1" max="4" step="1" value="1"></label>
+</div>
+
+<div id="out"></div>
+
+<script type="module">
+const out = document.getElementById('out');
+const meta = document.getElementById('meta');
+
+let atlas;
+try {
+  atlas = await fetch('../assets/atlas.json').then((r) => r.json());
+} catch {
+  atlas = (await import('../assets/atlas.js')).default; // secours en file://
+}
+
+const keys = Object.keys(atlas.frames);
+meta.textContent = `${keys.length} frames · ${Object.keys(atlas.anims).length} animations`;
+
+// ── Animations en lecture ────────────────────────────────────────────────────
+const h2a = document.createElement('h2');
+h2a.textContent = 'Animations';
+out.append(h2a);
+const animBox = document.createElement('div');
+animBox.className = 'anims';
+out.append(animBox);
+
+for (const [name, anim] of Object.entries(atlas.anims)) {
+  const wrap = document.createElement('div');
+  wrap.className = 'anim';
+  const cv = document.createElement('canvas');
+  const imgs = anim.frames.map((k) => {
+    const im = new Image();
+    im.src = '../assets/' + atlas.frames[k].file;
+    return im;
+  });
+  // Zone commune à toutes les frames, calée sur l'ancre, pour juger la stabilité.
+  const f = anim.frames.map((k) => atlas.frames[k]);
+  const left = Math.min(...f.map((x) => x.offset[0]));
+  const right = Math.max(...f.map((x) => x.offset[0] + x.w));
+  const top = Math.min(...f.map((x) => x.offset[1]));
+  cv.width = right - left + 4;
+  cv.height = -top + 8;
+  const ctx = cv.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+  let i = 0;
+  setInterval(() => {
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    ctx.fillStyle = '#2f3240';
+    ctx.fillRect(0, cv.height - 4, cv.width, 1);
+    const fr = f[i % f.length];
+    ctx.drawImage(imgs[i % f.length], fr.offset[0] - left + 2, fr.offset[1] + cv.height - 4);
+    i++;
+  }, 1000 / anim.fps);
+  wrap.append(cv, Object.assign(document.createElement('span'), {
+    textContent: `${name} · ${anim.frames.length}f · ${anim.fps}fps`,
+  }));
+  animBox.append(wrap);
+}
+
+// ── Toutes les frames, groupées par famille ──────────────────────────────────
+const groups = new Map();
+for (const k of keys) {
+  const g = k.replace(/\.\d+$/, '');
+  if (!groups.has(g)) groups.set(g, []);
+  groups.get(g).push(k);
+}
+
+for (const [g, list] of groups) {
+  const h = document.createElement('h2');
+  h.textContent = `${g} — ${list.length}`;
+  const grid = document.createElement('div');
+  grid.className = 'grid';
+  for (const k of list) {
+    const fr = atlas.frames[k];
+    const fig = document.createElement('figure');
+    const cell = document.createElement('div');
+    cell.className = 'cell';
+    const img = new Image();
+    img.src = '../assets/' + fr.file;
+    img.dataset.w = fr.w;
+    img.dataset.h = fr.h;
+    cell.append(img);
+    const cap = document.createElement('figcaption');
+    cap.innerHTML = `<b>${k}</b><br>${fr.w}×${fr.h}`;
+    fig.append(cell, cap);
+    grid.append(fig);
+  }
+  out.append(h, grid);
+}
+
+// ── Zoom ─────────────────────────────────────────────────────────────────────
+const zoom = document.getElementById('zoom');
+const applyZoom = () => {
+  const z = +zoom.value;
+  for (const img of out.querySelectorAll('.cell img')) {
+    img.style.width = img.dataset.w * z + 'px';
+    img.style.height = img.dataset.h * z + 'px';
+  }
+};
+zoom.addEventListener('input', applyZoom);
+applyZoom();
+</script>
+</body>
+</html>
