@@ -27,6 +27,7 @@ const { createCamera } = await import(join(ROOT, 'src/game/camera.js'));
 const { createParallaxRenderer } = await import(join(ROOT, 'src/render/parallax.js'));
 const { createAudio } = await import(join(ROOT, 'src/core/audio.js'));
 const { dessinerCurb2D, dessinerRampe2D, dessinerCone2D } = await import(join(ROOT, 'src/render/obstacles.js'));
+const { createStorage } = await import(join(ROOT, 'src/core/storage.js'));
 
 let réussis = 0;
 const échecs = [];
@@ -866,9 +867,18 @@ const scrollMenuAvant = M.monde.defilement;
 h.frames(10);
 verifier('le décor défile doucement en arrière-plan du menu', M.monde.defilement > scrollMenuAvant);
 
-// Sélection du rider Roller sur le menu (clientX ~ 730, clientY ~ 200)
+// §7 : le roller est verrouillé tant que 25 000 pts cumulés ne sont pas
+// atteints — cliquer dessus ne doit pas le sélectionner.
+verifier('roller verrouillé par défaut', !M.storage.riderDebloque('roller'));
+h.canvas.dispatch('click', { clientX: 730, clientY: 200 });
+verifier('état reste MENU après clic sur rider verrouillé (ne démarre pas)', M.jeu.is(M.State.MENU));
+verifier('le rider reste skate tant que le roller est verrouillé', M.selectedRider === 'skate');
+
+// Une fois débloqué (score cumulé simulé), le clic sélectionne bien roller.
+M.storage.debloquerRider('roller');
 h.canvas.dispatch('click', { clientX: 730, clientY: 200 });
 verifier('état reste MENU après sélection de rider (ne démarre pas)', M.jeu.is(M.State.MENU));
+verifier('le roller débloqué devient sélectionnable', M.selectedRider === 'roller');
 
 // Clic sur le bouton COMMENCER (clientX 620, clientY 284)
 h.canvas.dispatch('click', { clientX: 620, clientY: 284 });
@@ -883,6 +893,202 @@ titre('Orientation du sprite');
 const { flipPourDirection } = await import('../src/render/sprite.js');
 verifier('sens droite (direction +1) → sprite flippé', flipPourDirection(1) === true);
 verifier('sens gauche (direction -1) → sprite non flippé', flipPourDirection(-1) === false);
+
+// ─── Persistance (§12, core/storage.js) ──────────────────────────────────────
+titre('Persistance (§12)');
+
+// Note sur .flush() dans ce bloc : planifierEcriture() utilise un vrai
+// setTimeout (500 ms de temps RÉEL, pas simulé par le harnais). Sans flush()
+// avant localStorage.clear(), ce timer continue de courir en arrière-plan et
+// finit par réécrire une VIEILLE valeur par-dessus tout ce que les tests
+// suivants auront fait entre-temps — exactement le genre de fuite de timer
+// déjà rencontrée avec la musique en P4bis. flush() écrit tout de suite et
+// annule le timer, donc plus rien à laisser traîner.
+
+// Panne simulée : getItem qui lève, comme le ferait la navigation privée iOS
+// que le §12 demande explicitement de gérer.
+{
+  const original = globalThis.localStorage;
+  globalThis.localStorage = { getItem() { throw new Error('QuotaExceededError'); } };
+  const s = createStorage();
+  verifier('bascule sur un store mémoire si localStorage échoue', s.disponible === false);
+  s.setSetting('haptics', false); // ne doit pas planter, même sans backend
+  verifier('les réglages restent lisibles malgré l\'absence de backend',
+    s.settings.haptics === false);
+  globalThis.localStorage = original;
+}
+
+// Un schéma corrompu ou d'une version antérieure est réinitialisé, pas
+// interprété au petit bonheur (§12 : « si schema < 1, réinitialiser proprement
+// plutôt que de deviner »).
+{
+  localStorage.setItem('maxence-rider.v1', JSON.stringify({ schema: 0, settings: { sound: false } }));
+  const s = createStorage();
+  verifier('un schéma obsolète repart de zéro', s.settings.sound === true);
+  s.flush(); localStorage.clear();
+}
+
+{
+  localStorage.setItem('maxence-rider.v1', '{ceci n\'est pas du JSON');
+  const s = createStorage();
+  verifier('un JSON corrompu ne fait pas planter le chargement', s.settings.sound === true);
+  s.flush(); localStorage.clear();
+}
+
+// Classement : tri décroissant, tronqué à 10 (§12).
+{
+  const s = createStorage();
+  for (let i = 0; i < 15; i++) s.ajouterScore('landscape', 'endless', { score: i * 100, distance: i });
+  const liste = s.meilleursScores('landscape', 'endless');
+  verifier('classement tronqué à 10', liste.length === 10, `${liste.length} entrées`);
+  verifier('classement trié décroissant', liste[0].score === 1400 && liste[9].score === 500,
+    `${liste[0].score} .. ${liste[9].score}`);
+  verifier('paysage et portrait restent des classements séparés',
+    s.meilleursScores('portrait', 'endless').length === 0);
+  s.flush(); localStorage.clear();
+}
+
+// Déblocage : au-delà du seuil, jamais en-deçà.
+{
+  const s = createStorage();
+  verifier('roller verrouillé au départ', !s.riderDebloque('roller'));
+  s.ajouterScoreCumule(10000);
+  verifier('10 000 pts cumulés ne suffisent pas', !s.riderDebloque('roller'));
+  s.debloquerRider('roller');
+  verifier('debloquerRider() débloque effectivement', s.riderDebloque('roller'));
+  s.debloquerRider('roller'); // idempotent
+  verifier('un second débloquage ne duplique rien',
+    s.progress.ridersUnlocked.filter((r) => r === 'roller').length === 1);
+  s.flush(); localStorage.clear();
+}
+
+// Effacer mes données (§12) : tout repart de l'état par défaut.
+{
+  const s = createStorage();
+  s.ajouterScoreCumule(5000);
+  s.ajouterScore('landscape', 'endless', { score: 999 });
+  s.effacerTout();
+  verifier('effacerTout() repart de zéro',
+    s.progress.totalScore === 0 && s.meilleursScores('landscape', 'endless').length === 0);
+  s.flush(); localStorage.clear();
+}
+
+// ─── Persistance intégrée au jeu ──────────────────────────────────────────────
+titre('Persistance intégrée au jeu');
+
+localStorage.clear();
+reset({ obstacles: false });
+
+verifier('storage exposé et disponible dans le vrai jeu', M.storage.disponible === true);
+
+// §7 : déblocage réel du roller par le score cumulé sur plusieurs runs. Il
+// faut vraiment épuiser les 3 vies (pas juste crasher une fois) pour atteindre
+// GAMEOVER, où enregistrerFinDeRun() cumule le score dans storage.
+M.storage.effacerTout();
+verifier('roller verrouillé en tout début de partie', !M.storage.riderDebloque('roller'));
+M.scoring.etat.score = 30000; // simule un run qui a rapporté 30 000 pts
+// Franchir 10 000 pts change de palier et offre une vie bonus (§ progression
+// de niveau) : laisser cet effet se produire avant de fixer vies=1, sinon le
+// bonus le fait remonter à 2 et le crash respawn au lieu d'aller en GAMEOVER.
+h.frames(2);
+M.run.vies = 1;
+player.crasher();
+h.frames(60); // > 900 ms : crash → 0 vie → GAMEOVER → enregistrerFinDeRun()
+verifier('game over enregistre le run', M.jeu.current === 'GAMEOVER', M.jeu.current);
+verifier('roller débloqué après 25 000 pts cumulés (§7)', M.storage.riderDebloque('roller'),
+  `totalScore=${M.storage.progress.totalScore}`);
+M.jeu.go(M.State.MENU);
+
+// Coordonnées de clic canvas → espace virtuel : le harnais n'a pas de
+// getBoundingClientRect, donc main.js retombe sur { width: canvas.width },
+// et scaleX = view.w / canvas.width. Ici canvas.width=960, view.w=480 → le
+// facteur est 2 : un clic à la position virtuelle (x,y) s'envoie en
+// multipliant par ce facteur, exactement comme les tests « clic sur
+// COMMENCER » plus haut le font déjà (clientX 620 → cx 310 = rightX).
+const echelleClic = h.canvas.width / M.view.w;
+const clicVirtuel = (x, y) => h.canvas.dispatch('click', { clientX: x * echelleClic, clientY: y * echelleClic });
+
+// ─── Écran RÉGLAGES ───────────────────────────────────────────────────────────
+titre('Écran RÉGLAGES');
+
+M.jeu.go(M.State.SETTINGS);
+h.frames(2);
+verifier('état SETTINGS actif', M.jeu.is(M.State.SETTINGS));
+
+const haptiqueAvant = M.storage.settings.haptics;
+// Item « Vibrations » : troisième ligne de optionsReglages() → y = 46+2*22 = 90.
+clicVirtuel(240, 90);
+verifier('clic sur un réglage le bascule', M.storage.settings.haptics === !haptiqueAvant,
+  `${haptiqueAvant} → ${M.storage.settings.haptics}`);
+
+// Bouton « Effacer mes données » : deux clics, pas un seul (§12 : confirmation).
+M.storage.ajouterScoreCumule(1234);
+const yEffacer = 46 + 4 * 22 + 10;
+clicVirtuel(240, yEffacer);
+verifier('un seul clic ne suffit pas à effacer', M.storage.progress.totalScore > 0);
+clicVirtuel(240, yEffacer);
+verifier('le second clic confirme l\'effacement', M.storage.progress.totalScore === 0);
+
+h.keyDown('Escape');
+h.frames(2);
+verifier('Échap quitte les réglages vers le menu', M.jeu.is(M.State.MENU));
+
+// ─── Écran SCORES ─────────────────────────────────────────────────────────────
+titre('Écran SCORES');
+
+M.storage.ajouterScore('landscape', 'endless', { score: 4242, distance: 100, combo: 5, rider: 'skate', date: '2026-01-01' });
+M.jeu.go(M.State.SCORES);
+h.frames(2);
+verifier('état SCORES actif', M.jeu.is(M.State.SCORES));
+h.keyDown('KeyR');
+h.frames(2);
+verifier('R depuis l\'écran scores retourne au menu', M.jeu.is(M.State.MENU));
+
+// ─── Haptique (§11) ───────────────────────────────────────────────────────────
+titre('Haptique (§11)');
+
+// Le vibrer() sur crash vit dans majCollisions() (main.js), pas dans
+// player.crasher() : un appel direct à crasher() ne l'exercerait pas. Il faut
+// une vraie collision — seed 999 place un curb en worldX=100 (§P3/P4bis).
+function provoquerCrashReel() {
+  M.demarrerRun(999, { obstacles: true });
+  M.jeu.go(M.State.PLAY);
+  h.frames(2);
+  // §6.7 : 1,8 s d'invincibilité au démarrage d'un run — à 240 px/s ça couvre
+  // 432 px, largement au-delà du curb en worldX=100. Sans la lever, le rider
+  // le traverse sans jamais entrer en collision.
+  M.run.invincibleJusque = 0;
+  for (let i = 0; i < 120 && M.jeu.is(M.State.PLAY) && player.state !== 'CRASH'; i++) h.frame();
+}
+
+M.storage.setSetting('haptics', true);
+reset({ obstacles: false });
+h.vibrations.length = 0; // purge les vibrations des resets précédents
+
+tapCourt();
+for (let i = 0; i < 160 && !(player.state === 'LAND'); i++) h.frame();
+h.frames(2);
+verifier('un trick réussi déclenche une vibration courte (§11)',
+  h.vibrations.includes(12), JSON.stringify(h.vibrations));
+
+h.vibrations.length = 0;
+provoquerCrashReel();
+verifier('crash obtenu pour le test de vibration', player.state === 'CRASH', player.state);
+verifier('un crash déclenche le motif de vibration [40,30,40] (§11)',
+  h.vibrations.some((v) => Array.isArray(v) && v[0] === 40 && v[1] === 30 && v[2] === 40),
+  JSON.stringify(h.vibrations));
+
+M.storage.setSetting('haptics', false);
+h.vibrations.length = 0;
+provoquerCrashReel();
+verifier('haptique désactivée dans les réglages → aucune vibration',
+  h.vibrations.length === 0, JSON.stringify(h.vibrations));
+
+M.storage.setSetting('haptics', true);
+
+M.storage.setSetting('haptics', true);
+localStorage.clear();
+reset({ obstacles: false });
 
 // ─── Bundle file:// ──────────────────────────────────────────────────────────
 // Le jeu doit démarrer aussi bien depuis dist/bundle.js que depuis les modules.
@@ -907,6 +1113,47 @@ if (MB) {
   for (let i = 0; i < 160; i++) { hb.frame(); maxB = Math.max(maxB, solB - MB.player.y); if (MB.player.auSol && maxB > 5) break; }
   verifier('le bundle fait sauter le rider', maxB > 70, `${maxB.toFixed(0)} px`);
 }
+
+// ─── Persistance entre deux sessions (§16 : « survit à la fermeture ») ───────
+// En dernier, volontairement : chaque boot() réinstalle globalThis.window,
+// .document, .requestAnimationFrame — tout ce que h/M/player utilisaient
+// depuis le début du fichier. Après ce bloc, plus aucun test ne doit dépendre
+// de l'environnement global — exactement comme le bloc « Bundle file:// »
+// juste au-dessus, qui pollue de la même façon et pour la même raison.
+titre('Persistance entre deux sessions');
+
+localStorage.clear();
+{
+  // Première « session » : un run qui rapporte des points.
+  const h1 = await boot({ width: 960, height: 540, dpr: 1, search: '?debug=1', resetStorage: true });
+  const M1 = globalThis.window.__maxence;
+  h1.frames(2);
+  M1.demarrerRun(999, { obstacles: false });
+  M1.jeu.go(M1.State.PLAY);
+  h1.frames(2);
+  M1.scoring.etat.score = 777;
+  M1.run.vies = 1; // sinon 3 vies par défaut : un seul crash ne suffit pas au game over
+  M1.player.crasher();
+  h1.frames(60);
+  verifier('session 1 : le run est enregistré', M1.storage.progress.totalScore === 777);
+  // planifierEcriture() debounce sur un vrai setTimeout(500ms) — flush() écrit
+  // tout de suite. Sans lui, le second boot() (qui suit en quelques ms de
+  // temps réel) lirait avant que l'écriture différée n'ait eu lieu : un vrai
+  // navigateur aurait le même problème si on fermait l'onglet dans la même
+  // fraction de seconde, raison d'être de C4 (« jamais pendant une frame ») —
+  // mais ici on veut vérifier l'ÉCRITURE, pas ce cas limite de timing.
+  M1.storage.flush();
+
+  // Deuxième « session » : nouveau boot, MÊME localStorage (fermer/rouvrir).
+  const h2 = await boot({ width: 960, height: 540, dpr: 1, search: '?debug=1', resetStorage: false });
+  const M2 = globalThis.window.__maxence;
+  h2.frames(2);
+  verifier('session 2 : le score cumulé a survécu à la « fermeture »',
+    M2.storage.progress.totalScore === 777, `lu : ${M2.storage.progress.totalScore}`);
+  verifier('session 2 : le classement a survécu aussi',
+    M2.storage.meilleursScores('landscape', 'endless').some((s) => s.score === 777));
+}
+localStorage.clear();
 
 // ─── Bilan ───────────────────────────────────────────────────────────────────
 console.log(`\n${réussis} réussis, ${échecs.length} échoués\n`);

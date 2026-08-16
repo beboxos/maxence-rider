@@ -293,11 +293,21 @@ class Element {
   appendChild() {}
 }
 
+// Au niveau module, pas dans boot() : un test qui rappelle boot() pour
+// simuler « fermer l'onglet et le rouvrir » doit retrouver les mêmes données,
+// exactement comme un vrai navigateur sur la même origine.
+const magasinPartage = new Map();
+
 /**
  * Installe l'environnement puis charge le jeu.
+ * @param {boolean} [resetStorage] si true, vide le localStorage simulé avant
+ *   de démarrer — un nouveau visiteur plutôt qu'une session qui continue.
  * @returns {Promise<object>} poignées de pilotage (temps, entrées, canvas)
  */
-export async function boot({ width = 960, height = 540, dpr = 1, search = '', bundle = false } = {}) {
+export async function boot({
+  width = 960, height = 540, dpr = 1, search = '', bundle = false, resetStorage = true,
+} = {}) {
+  if (resetStorage) magasinPartage.clear();
   const canvas = new Canvas(width, height);
   const panne = new Element('panne');
   panne.hidden = true; // fidèle au HTML : <p id="panne" hidden>
@@ -341,6 +351,30 @@ export async function boot({ width = 960, height = 540, dpr = 1, search = '', bu
 
   globalThis.location = { search, protocol: 'http:' };
 
+  // localStorage : un vrai backend (Map partagée au niveau module, voir plus
+  // haut), pas juste « absent ». Sans lui, core/storage.js bascule sur son
+  // fallback mémoire dans tous les tests, et le comportement qu'il est censé
+  // garantir — persister entre deux sessions — ne serait jamais vérifié,
+  // seulement son absence de crash.
+  globalThis.localStorage = {
+    getItem: (k) => (magasinPartage.has(k) ? magasinPartage.get(k) : null),
+    setItem: (k, v) => { magasinPartage.set(k, String(v)); },
+    removeItem: (k) => { magasinPartage.delete(k); },
+    clear: () => magasinPartage.clear(),
+  };
+
+  // navigator.vibrate : espionné plutôt que simplement absent, pour que les
+  // tests puissent vérifier QUE l'haptique se déclenche (§11), pas seulement
+  // que son absence ne fait pas planter le jeu.
+  const vibrationsAppelees = [];
+  // Node 24+ fournit déjà un `navigator` global (lecture seule, sans setter) :
+  // Object.defineProperty le remplace plutôt qu'une simple affectation.
+  Object.defineProperty(globalThis, 'navigator', {
+    value: { vibrate: (motif) => { vibrationsAppelees.push(motif); return true; } },
+    writable: true,
+    configurable: true,
+  });
+
   // Image : décode réellement nos PNG, de façon synchrone puis notifie.
   globalThis.Image = class {
     set src(path) {
@@ -379,6 +413,7 @@ export async function boot({ width = 960, height = 540, dpr = 1, search = '', bu
     modules,
     element: (id) => elements.get(id),
     get time() { return virtualTime; },
+    get vibrations() { return vibrationsAppelees; },
 
     /** Avance d'une frame d'affichage. `ms` par défaut = 1/60 s. */
     frame(ms = 1000 / 60) {

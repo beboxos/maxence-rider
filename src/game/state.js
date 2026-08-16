@@ -11,6 +11,7 @@ export const State = {
   PAUSE: 'PAUSE',
   GAMEOVER: 'GAMEOVER',
   SCORES: 'SCORES',
+  SETTINGS: 'SETTINGS',
 };
 
 export function createStateMachine(initial, handlers = {}) {

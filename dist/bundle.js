@@ -3064,6 +3064,7 @@ const State = {
   PAUSE: 'PAUSE',
   GAMEOVER: 'GAMEOVER',
   SCORES: 'SCORES',
+  SETTINGS: 'SETTINGS',
 };
 
 function createStateMachine(initial, handlers = {}) {
@@ -5407,6 +5408,169 @@ function createAudio() {
 
 return { createAudio };
 })();
+__mod["src/core/storage.js"] = (function () {
+// Persistance locale, schéma versionné (§12).
+//
+// Une seule clé, `maxence-rider.v1`. Écriture débouncée (500 ms) : jamais de
+// localStorage.setItem synchrone dans la boucle de jeu à 60 fps — un accès
+// disque, même bref, n'a rien à faire dans un budget de 16 ms par frame.
+//
+// try/catch partout : en navigation privée iOS, localStorage peut lever à la
+// lecture comme à l'écriture. Un échec bascule sur un store mémoire (le jeu
+// continue de fonctionner pour la session en cours) et prévient une seule
+// fois, jamais en boucle.
+
+const CLE = 'maxence-rider.v1';
+const SCHEMA = 1;
+const DELAI_DEBOUNCE = 500;
+const TOP_N = 10;
+
+function etatParDefaut() {
+  return {
+    schema: SCHEMA,
+    settings: { sound: true, music: true, haptics: true, rider: 'skate', reducedFx: false },
+    progress: { levelsUnlocked: 1, stars: {}, totalScore: 0, ridersUnlocked: ['skate'] },
+    scores: {
+      landscape: { endless: [] },
+      portrait: { endless: [] },
+    },
+    stats: { runs: 0, crashes: 0, bestCombo: 0, totalDistance: 0 },
+  };
+}
+
+/** Fusionne un objet lu avec les valeurs par défaut, sans jamais faire confiance à sa forme. */
+function normaliser(brut) {
+  const def = etatParDefaut();
+  if (!brut || typeof brut !== 'object' || brut.schema !== SCHEMA) return def;
+  try {
+    return {
+      schema: SCHEMA,
+      settings: { ...def.settings, ...(brut.settings || {}) },
+      progress: { ...def.progress, ...(brut.progress || {}), stars: { ...(brut.progress?.stars || {}) } },
+      scores: {
+        landscape: { ...def.scores.landscape, ...(brut.scores?.landscape || {}) },
+        portrait: { ...def.scores.portrait, ...(brut.scores?.portrait || {}) },
+      },
+      stats: { ...def.stats, ...(brut.stats || {}) },
+    };
+  } catch {
+    return def;
+  }
+}
+
+function createStorage() {
+  let etat = etatParDefaut();
+  let disponible = true;
+  let avertiEchec = false;
+  let minuteur = null;
+
+  function avertirUneFois(message) {
+    if (avertiEchec) return;
+    avertiEchec = true;
+    console.warn(`[storage] ${message}`);
+  }
+
+  function charger() {
+    try {
+      if (typeof localStorage === 'undefined') { disponible = false; return; }
+      const brut = localStorage.getItem(CLE);
+      if (brut) etat = normaliser(JSON.parse(brut));
+    } catch {
+      disponible = false;
+      avertirUneFois('lecture impossible — les scores ne seront pas conservés sur cet appareil.');
+    }
+  }
+
+  function ecrireMaintenant() {
+    if (!disponible) return;
+    try {
+      localStorage.setItem(CLE, JSON.stringify(etat));
+    } catch {
+      disponible = false;
+      avertirUneFois('écriture impossible — les scores ne seront pas conservés sur cet appareil.');
+    }
+  }
+
+  /** Programme une écriture différée ; les appels rapprochés fusionnent en une seule. */
+  function planifierEcriture() {
+    if (!disponible) return;
+    if (minuteur) clearTimeout(minuteur);
+    minuteur = setTimeout(() => { minuteur = null; ecrireMaintenant(); }, DELAI_DEBOUNCE);
+  }
+
+  charger();
+
+  return {
+    get disponible() { return disponible; },
+    get settings() { return etat.settings; },
+    get progress() { return etat.progress; },
+    get stats() { return etat.stats; },
+
+    setSetting(cle, valeur) {
+      etat.settings[cle] = valeur;
+      planifierEcriture();
+    },
+
+    /** §6.6/§7 : cumul du score total, base du déblocage des riders. */
+    ajouterScoreCumule(points) {
+      etat.progress.totalScore += Math.max(0, points);
+      planifierEcriture();
+    },
+
+    debloquerRider(id) {
+      if (!etat.progress.ridersUnlocked.includes(id)) {
+        etat.progress.ridersUnlocked.push(id);
+        planifierEcriture();
+      }
+    },
+
+    riderDebloque(id) {
+      return etat.progress.ridersUnlocked.includes(id);
+    },
+
+    enregistrerStats({ crash = false, combo = 1, distance = 0 } = {}) {
+      etat.stats.runs++;
+      if (crash) etat.stats.crashes++;
+      etat.stats.bestCombo = Math.max(etat.stats.bestCombo, combo);
+      etat.stats.totalDistance += Math.max(0, distance);
+      planifierEcriture();
+    },
+
+    /**
+     * Ajoute un score au classement `categorie` (ex. "endless"), trié
+     * décroissant, tronqué à 10 (§12). `orientation` sépare paysage/portrait
+     * (§11 : scores non comparables entre les deux).
+     */
+    ajouterScore(orientation, categorie, entree) {
+      const bucket = etat.scores[orientation] || (etat.scores[orientation] = {});
+      const liste = bucket[categorie] || (bucket[categorie] = []);
+      liste.push(entree);
+      liste.sort((a, b) => b.score - a.score);
+      liste.length = Math.min(liste.length, TOP_N);
+      planifierEcriture();
+      return liste;
+    },
+
+    meilleursScores(orientation, categorie) {
+      return etat.scores[orientation]?.[categorie] || [];
+    },
+
+    /** §12 : bouton « Effacer mes données », avec confirmation côté appelant. */
+    effacerTout() {
+      etat = etatParDefaut();
+      if (minuteur) { clearTimeout(minuteur); minuteur = null; }
+      ecrireMaintenant();
+    },
+
+    /** Force l'écriture immédiate — utile avant de quitter la page. */
+    flush() {
+      if (minuteur) { clearTimeout(minuteur); minuteur = null; ecrireMaintenant(); }
+    },
+  };
+}
+
+return { createStorage };
+})();
 __mod["src/render/obstacles.js"] = (function () {
 // Rendu procédural 2D pur (vue de profil stricte en pixel art) pour les obstacles clés.
 //
@@ -5641,6 +5805,7 @@ const { createParticleSystem } = __mod["src/game/particles.js"];
 const { createCamera } = __mod["src/game/camera.js"];
 const { createParallaxRenderer } = __mod["src/render/parallax.js"];
 const { createAudio } = __mod["src/core/audio.js"];
+const { createStorage } = __mod["src/core/storage.js"];
 const { dessinerCurb2D, dessinerRampe2D, dessinerCone2D } = __mod["src/render/obstacles.js"];
 const { THEMES, getTheme } = __mod["src/data/themes.js"];
 const { Family, ENTITIES } = __mod["src/data/entities.js"];
@@ -5667,7 +5832,12 @@ const particles = createParticleSystem();
 const camera = createCamera();
 const parallax = createParallaxRenderer();
 const audio = createAudio();
+const storage = createStorage();
 const monde = { defilement: 0, prevDefilement: 0 };
+
+// §7 : le rider roller se débloque à 25 000 points cumulés sur tous les runs
+// (progress.totalScore), pas le score d'un seul run.
+const SEUIL_DEBLOCAGE_ROLLER = 25000;
 
 let dernierSautAudio = null;
 let dernierComboAudio = 1;
@@ -5688,6 +5858,13 @@ let curseurEntites = 0;
 
 function solY() {
   return view.h - SOL;
+}
+
+/** §11 : retour haptique, désactivable dans les réglages. navigator.vibrate
+ * est ignoré silencieusement là où il n'existe pas (desktop, iOS Safari). */
+function vibrer(motif) {
+  if (!storage.settings.haptics) return;
+  try { navigator.vibrate?.(motif); } catch {}
 }
 
 function nouvelleSeed() {
@@ -5758,6 +5935,7 @@ function enregistrerTrickReussi() {
   const perfect = !!player.perfectLandingDernier;
   scoring.enregistrerTrick(label, points, player.x, player.y - 25, { perfect });
   audio.sfx.land(perfect);
+  vibrer(12); // §11 : trick réussi
 
   if (perfect) {
     camera.shake(3, 0.15);
@@ -5782,6 +5960,7 @@ function majCollisions(scrollAvant, scrollApres) {
       particles.reinitGrind();
       camera.shake(8, 0.35); // §10 : shake d'impact
       audio.sfx.crash();
+      vibrer([40, 30, 40]); // §11 : crash
       return;
     }
 
@@ -6173,35 +6352,63 @@ function dessinerJeu(alpha) {
   dessinerHUD(theme);
 }
 
-// ── Records & Persistance ───────────────────────────────────────────────────
+// ── Records & Persistance (§12) ───────────────────────────────────────────────
 
-const STORAGE_HIGHSCORE = 'maxence_highscore';
-let highscore = 0;
-try {
-  if (typeof localStorage !== 'undefined') {
-    highscore = parseInt(localStorage.getItem(STORAGE_HIGHSCORE) || '0', 10) || 0;
-  }
-} catch {}
-
-function verifierNouveauRecord(score) {
-  if (score > highscore) {
-    highscore = score;
-    try {
-      if (typeof localStorage !== 'undefined') {
-        localStorage.setItem(STORAGE_HIGHSCORE, String(highscore));
-      }
-    } catch {}
-    return true;
-  }
-  return false;
+/** §12 : les classements sont séparés par orientation — non comparables. */
+function orientationActuelle() {
+  return view.portrait ? 'portrait' : 'landscape';
 }
 
-let selectedRider = 'skate';
+function meilleurScoreActuel() {
+  const liste = storage.meilleursScores(orientationActuelle(), 'endless');
+  return liste.length ? liste[0].score : 0;
+}
+
+/** Enregistre le résultat d'un run terminé : classement, stats, cumul (§7, §12). */
+function enregistrerFinDeRun(score, distM) {
+  const etaitRecord = score > meilleurScoreActuel();
+  storage.ajouterScore(orientationActuelle(), 'endless', {
+    score, distance: distM, combo: scoring.etat.meilleurCombo,
+    rider: player.stats.id, date: new Date().toISOString().slice(0, 10), seed: run.seed,
+  });
+  storage.enregistrerStats({ crash: true, combo: scoring.etat.meilleurCombo, distance: distM });
+  storage.ajouterScoreCumule(score);
+  if (!storage.riderDebloque('roller') && storage.progress.totalScore >= SEUIL_DEBLOCAGE_ROLLER) {
+    storage.debloquerRider('roller');
+  }
+  return etaitRecord;
+}
+
+let selectedRider = (storage.settings.rider === 'roller' && storage.riderDebloque('roller'))
+  ? 'roller' : 'skate';
 let nouveauRecordPartie = false;
+let confirmationEffacement = false;
 
 function lancerPartie() {
   demarrerRun(nouvelleSeed(), { rider: selectedRider });
   jeu.go(State.PLAY);
+}
+
+/** §12 : options affichées/pilotées par l'écran RÉGLAGES. */
+function optionsReglages() {
+  return [
+    { cle: 'sound', label: 'Effets sonores', actif: !audio.isMuted() },
+    { cle: 'music', label: 'Musique', actif: storage.settings.music },
+    { cle: 'haptics', label: 'Vibrations', actif: storage.settings.haptics },
+    { cle: 'reducedFx', label: 'Réduire les effets', actif: storage.settings.reducedFx },
+  ];
+}
+
+/** Bascule un réglage par sa clé — un seul point d'entrée pour le clic et le clavier. */
+function basculerReglage(cle) {
+  if (cle === 'sound') { basculerSon(); return; }
+  if (cle === 'music') {
+    const actif = !storage.settings.music;
+    storage.setSetting('music', actif);
+    if (actif && jeu.is(State.PLAY)) audio.startMusic(); else audio.stopMusic();
+    return;
+  }
+  storage.setSetting(cle, !storage.settings[cle]);
 }
 
 // ── Écrans ───────────────────────────────────────────────────────────────────
@@ -6285,10 +6492,11 @@ const jeu = createStateMachine(State.BOOT, {
       ctx.fillText('ARCADE 2D ACTION · SKATE & ROLLER', rightX, 52 + floatY);
 
       // Record
-      if (highscore > 0) {
+      const record = meilleurScoreActuel();
+      if (record > 0) {
         ctx.fillStyle = '#f2f0e6';
         ctx.font = '8px ui-monospace, monospace';
-        ctx.fillText(`🏆 RECORD : ${highscore} PTS`, rightX, 68);
+        ctx.fillText(`🏆 RECORD : ${record} PTS`, rightX, 68);
       }
 
       // Sélecteur de Rider (boutons tactiles larges)
@@ -6296,6 +6504,7 @@ const jeu = createStateMachine(State.BOOT, {
       const rx1 = Math.round(rightX - rw - 8);
       const rx2 = Math.round(rightX + 8);
       const ry = 86;
+      const rollerDebloque = storage.riderDebloque('roller');
 
       // Bouton Skate
       ctx.fillStyle = selectedRider === 'skate' ? '#4ed4c4' : '#242838';
@@ -6306,14 +6515,21 @@ const jeu = createStateMachine(State.BOOT, {
       ctx.font = 'bold 9px ui-monospace, monospace';
       ctx.fillText('🛹 SKATE', rx1 + rw / 2, ry + rh / 2);
 
-      // Bouton Roller
-      ctx.fillStyle = selectedRider === 'roller' ? '#4ed4c4' : '#242838';
+      // Bouton Roller — §7 : verrouillé tant que 25 000 pts cumulés pas atteints.
+      ctx.fillStyle = !rollerDebloque ? '#1a1c26' : (selectedRider === 'roller' ? '#4ed4c4' : '#242838');
       ctx.fillRect(rx2, ry, rw, rh);
-      ctx.fillStyle = selectedRider === 'roller' ? '#10131e' : '#141724';
+      ctx.fillStyle = !rollerDebloque ? '#141520' : (selectedRider === 'roller' ? '#10131e' : '#141724');
       ctx.fillRect(rx2 + 2, ry + 2, rw - 4, rh - 4);
-      ctx.fillStyle = selectedRider === 'roller' ? '#4ed4c4' : '#8a8d9e';
+      ctx.fillStyle = !rollerDebloque ? '#4a4d5e' : (selectedRider === 'roller' ? '#4ed4c4' : '#8a8d9e');
       ctx.font = 'bold 9px ui-monospace, monospace';
-      ctx.fillText('🛼 ROLLER', rx2 + rw / 2, ry + rh / 2);
+      if (rollerDebloque) {
+        ctx.fillText('🛼 ROLLER', rx2 + rw / 2, ry + rh / 2);
+      } else {
+        ctx.fillText('🔒 ROLLER', rx2 + rw / 2, ry + rh / 2 - 5);
+        ctx.font = '6px ui-monospace, monospace';
+        const manque = Math.max(0, SEUIL_DEBLOCAGE_ROLLER - storage.progress.totalScore);
+        ctx.fillText(`${manque} pts restants`, rx2 + rw / 2, ry + rh / 2 + 7);
+      }
 
       // Gros Bouton Jouer
       const bw = 216, bh = 32;
@@ -6327,6 +6543,22 @@ const jeu = createStateMachine(State.BOOT, {
       ctx.fillStyle = '#f2f0e6';
       ctx.font = 'bold 11px ui-monospace, monospace';
       ctx.fillText('▶  COMMENCER LA PARTIE', rightX, by + bh / 2);
+
+      // Accès Scores / Réglages — petits boutons secondaires sous COMMENCER.
+      const sw = 104, sh = 20, sy = by + bh + 8;
+      const sx1 = Math.round(rightX - sw - 4);
+      const sx2 = Math.round(rightX + 4);
+      ctx.fillStyle = '#1c1f2c';
+      ctx.fillRect(sx1, sy, sw, sh);
+      ctx.fillRect(sx2, sy, sw, sh);
+      ctx.strokeStyle = '#4ed4c4';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(sx1 + 0.5, sy + 0.5, sw - 1, sh - 1);
+      ctx.strokeRect(sx2 + 0.5, sy + 0.5, sw - 1, sh - 1);
+      ctx.fillStyle = '#f2f0e6';
+      ctx.font = '7px ui-monospace, monospace';
+      ctx.fillText('🏆 SCORES', sx1 + sw / 2, sy + sh / 2);
+      ctx.fillText('⚙ RÉGLAGES', sx2 + sw / 2, sy + sh / 2);
 
       // Contrôles
       ctx.fillStyle = '#8a8d9e';
@@ -6359,7 +6591,7 @@ const jeu = createStateMachine(State.BOOT, {
       audio.stopMusic();
       const distM = Math.floor(player.distance / 10);
       const total = scoring.scoreTotal(distM);
-      nouveauRecordPartie = verifierNouveauRecord(total);
+      nouveauRecordPartie = enregistrerFinDeRun(total, distM);
     },
     update: () => {
       input.update();
@@ -6383,7 +6615,7 @@ const jeu = createStateMachine(State.BOOT, {
       const distM = Math.floor(player.distance / 10);
       const scoreTotal = scoring.scoreTotal(distM);
       texteCentre(`Score : ${scoreTotal} pts`, view.h / 2 - 6, '#f2f0e6');
-      texteCentre(`Distance : ${distM} m · Record : ${highscore} pts`, view.h / 2 + 6, '#8a8d9e');
+      texteCentre(`Distance : ${distM} m · Record : ${meilleurScoreActuel()} pts`, view.h / 2 + 6, '#8a8d9e');
 
       // Boutons interactifs : Rejouer & Menu Principal / Choix Rider
       const bw1 = 96, bw2 = 136, bh = 24;
@@ -6415,6 +6647,82 @@ const jeu = createStateMachine(State.BOOT, {
       ctx.fillStyle = '#8a8d9e';
       ctx.font = '7px ui-monospace, monospace';
       ctx.fillText('R : REJOUER   ·   ÉCHAP : RETOUR AU MENU', view.w / 2, view.h / 2 + 54);
+    },
+  },
+  [State.SCORES]: {
+    enter: () => { input.clear(); },
+    update: () => {
+      input.update();
+      if (input.consume(Action.PAUSE) || input.consume(Action.RESTART)) jeu.go(State.MENU);
+    },
+    render: () => {
+      ctx.fillStyle = '#12131a';
+      ctx.fillRect(0, 0, view.w, view.h);
+      texteCentre('🏆 MEILLEURS SCORES', 20, '#ffc93c');
+      ctx.fillStyle = '#8a8d9e';
+      ctx.font = '7px ui-monospace, monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(view.portrait ? 'PORTRAIT' : 'PAYSAGE', view.w / 2, 32);
+
+      const scores = storage.meilleursScores(orientationActuelle(), 'endless');
+      if (scores.length === 0) {
+        // §10 : un écran vide invite à agir, jamais un silence.
+        texteCentre('Aucun run enregistré. Fais-en un.', view.h / 2, '#8a8d9e');
+      } else {
+        const y0 = 46;
+        scores.slice(0, 10).forEach((s, i) => {
+          const y = y0 + i * 14;
+          ctx.textAlign = 'left';
+          ctx.fillStyle = i === 0 ? '#ffc93c' : '#f2f0e6';
+          ctx.font = 'bold 8px ui-monospace, monospace';
+          ctx.fillText(`${i + 1}.`, 30, y);
+          ctx.fillText(`${s.score} pts`, 54, y);
+          ctx.fillStyle = '#8a8d9e';
+          ctx.font = '7px ui-monospace, monospace';
+          ctx.textAlign = 'right';
+          ctx.fillText(`${s.rider === 'roller' ? '🛼' : '🛹'} ×${s.combo}  ${s.distance}m  ${s.date}`, view.w - 30, y);
+        });
+      }
+
+      texteCentre('ÉCHAP OU R : RETOUR', view.h - 14, '#8a8d9e');
+    },
+  },
+  [State.SETTINGS]: {
+    enter: () => { input.clear(); confirmationEffacement = false; },
+    update: () => {
+      input.update();
+      if (input.consume(Action.PAUSE)) jeu.go(State.MENU);
+    },
+    render: () => {
+      ctx.fillStyle = '#12131a';
+      ctx.fillRect(0, 0, view.w, view.h);
+      texteCentre('⚙ RÉGLAGES', 20, '#4ed4c4');
+
+      const items = optionsReglages();
+      items.forEach((it, i) => {
+        const y = 46 + i * 22;
+        ctx.textAlign = 'left';
+        ctx.fillStyle = '#f2f0e6';
+        ctx.font = '8px ui-monospace, monospace';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(it.label, 24, y);
+
+        ctx.textAlign = 'right';
+        ctx.fillStyle = it.actif ? '#4ed4c4' : '#4a4d5e';
+        ctx.font = 'bold 8px ui-monospace, monospace';
+        ctx.fillText(it.actif ? 'ACTIVÉ' : 'COUPÉ', view.w - 24, y);
+      });
+
+      const yEffacer = 46 + items.length * 22 + 10;
+      ctx.textAlign = 'center';
+      ctx.fillStyle = confirmationEffacement ? '#ff5c3a' : '#8a8d9e';
+      ctx.font = 'bold 8px ui-monospace, monospace';
+      ctx.fillText(
+        confirmationEffacement ? 'SÛR ? TOUCHER ENCORE POUR CONFIRMER' : '🗑 EFFACER MES DONNÉES',
+        view.w / 2, yEffacer,
+      );
+
+      texteCentre('ÉCHAP : RETOUR', view.h - 14, '#8a8d9e');
     },
   },
 });
@@ -6478,26 +6786,71 @@ canvas.addEventListener('click', (e) => {
     // Clic / Touch sur Bouton Skate
     if (cx >= rx1 - 15 && cx <= rx1 + rw + 8 && cy >= ry - 8 && cy <= ry + rh + 8) {
       selectedRider = 'skate';
+      storage.setSetting('rider', 'skate');
       audio.ensureResumed();
       audio.sfx.coin();
       return;
     }
-    // Clic / Touch sur Bouton Roller
+    // Clic / Touch sur Bouton Roller — verrouillé tant que non débloqué (§7).
     if (cx >= rx2 - 8 && cx <= rx2 + rw + 15 && cy >= ry - 8 && cy <= ry + rh + 8) {
-      selectedRider = 'roller';
-      audio.ensureResumed();
-      audio.sfx.coin();
+      if (storage.riderDebloque('roller')) {
+        selectedRider = 'roller';
+        storage.setSetting('rider', 'roller');
+        audio.ensureResumed();
+        audio.sfx.coin();
+      } else {
+        audio.ensureResumed();
+        audio.sfx.crash(); // retour sonore distinct : verrouillé, pas sélectionné
+      }
       return;
     }
-    // Clic / Touch sur COMMENCER ou bas de l'écran
+    // Clic / Touch sur COMMENCER
     const bw = 216, bh = 32, by = 126;
-    if (cx >= rightX - bw / 2 - 14 && cx <= rightX + bw / 2 + 14 && cy >= by - 6 && cy <= by + bh + 10) {
+    if (cx >= rightX - bw / 2 - 14 && cx <= rightX + bw / 2 + 14 && cy >= by - 6 && cy <= by + bh + 4) {
       lancerPartie();
       return;
     }
-    if (cy > 120) {
+    // Boutons secondaires SCORES / RÉGLAGES, juste sous COMMENCER.
+    const sw = 104, sh = 20, sy = by + bh + 8;
+    const sx1 = Math.round(rightX - sw - 4);
+    const sx2 = Math.round(rightX + 4);
+    if (cx >= sx1 && cx <= sx1 + sw && cy >= sy && cy <= sy + sh) {
+      audio.ensureResumed();
+      jeu.go(State.SCORES);
+      return;
+    }
+    if (cx >= sx2 && cx <= sx2 + sw && cy >= sy && cy <= sy + sh) {
+      audio.ensureResumed();
+      jeu.go(State.SETTINGS);
+      return;
+    }
+    if (cy > sy + sh + 10) {
       lancerPartie();
     }
+  } else if (jeu.is(State.SCORES)) {
+    jeu.go(State.MENU);
+  } else if (jeu.is(State.SETTINGS)) {
+    const items = optionsReglages();
+    let clique = false;
+    items.forEach((it, i) => {
+      const y = 46 + i * 22;
+      if (cy >= y - 10 && cy <= y + 10) { basculerReglage(it.cle); clique = true; }
+    });
+    if (!clique) {
+      const yEffacer = 46 + items.length * 22 + 10;
+      if (cy >= yEffacer - 10 && cy <= yEffacer + 10) {
+        if (confirmationEffacement) {
+          storage.effacerTout();
+          confirmationEffacement = false;
+          audio.sfx.crash();
+        } else {
+          confirmationEffacement = true;
+          audio.sfx.coin();
+        }
+        clique = true;
+      }
+    }
+    if (!clique && cy > view.h - 24) jeu.go(State.MENU);
   } else if (jeu.is(State.GAMEOVER)) {
     const bw1 = 96, bw2 = 136, bh = 24;
     const bx1 = Math.round(centreX - bw1 - 6);
@@ -6573,10 +6926,11 @@ function dessinerDebug() {
 
 if (DEBUG) {
   window.__maxence = {
-    player, monde, view, jeu, boucle, input, atlas, run, scoring, particles, camera, parallax, audio,
+    player, monde, view, jeu, boucle, input, atlas, run, scoring, particles, camera, parallax, audio, storage,
     Action, State, RiderState, Family, ENTITIES, SAUTS, THEMES, getTheme, solY,
     get level() { return level; },
     get entites() { return entites; },
+    get selectedRider() { return selectedRider; },
     demarrerRun, respawn,
   };
 }
