@@ -100,6 +100,13 @@ const Action = {
   RESTART: 'RESTART',
   CONFIRM: 'CONFIRM',
   TOGGLE_MUTE: 'TOGGLE_MUTE',
+
+  // §16 : toutes les actions accessibles au clavier — menus et réglages
+  // compris, pas seulement le jeu. Distinctes de CROUCH_MANUAL/LEAN_* : ces
+  // dernières ne servent qu'en jeu, jamais en menu, donc pas de conflit à
+  // partager ArrowUp/ArrowDown, mais un nom séparé garde chaque contexte lisible.
+  MENU_UP: 'MENU_UP',
+  MENU_DOWN: 'MENU_DOWN',
 };
 
 // Un appui bref est un ollie, un appui tenu un flip. Le seuil doit être franchi
@@ -179,6 +186,11 @@ function createInput(target, { onPause } = {}) {
       case 'ArrowDown': case 'KeyS':
         e.preventDefault();
         held[Action.CROUCH_MANUAL] = true;
+        press(Action.MENU_DOWN);
+        break;
+      case 'ArrowUp': case 'KeyW':
+        e.preventDefault();
+        press(Action.MENU_UP);
         break;
       case 'ArrowLeft': case 'KeyA': held[Action.LEAN_BACK] = true; break;
       case 'ArrowRight': case 'KeyD': held[Action.LEAN_FWD] = true; break;
@@ -3064,6 +3076,7 @@ const State = {
   PAUSE: 'PAUSE',
   GAMEOVER: 'GAMEOVER',
   SCORES: 'SCORES',
+  SETTINGS: 'SETTINGS',
 };
 
 function createStateMachine(initial, handlers = {}) {
@@ -4532,6 +4545,9 @@ function createScoring() {
     ramasserCollectible,
     cleanLine,
     emettreBandeau,
+    // Alias pour les bandeaux « libres » (vie gagnée, changement de niveau) que
+    // main.js émet hors du flux normal d'un trick — même signature
+    // (texte, x, y, couleur) que emettreBandeau, pas un ordre différent.
     afficherBandeau: emettreBandeau,
     update,
     etatBandeau,
@@ -5371,7 +5387,12 @@ function createAudio() {
 
   function startMusic() {
     ensureResumed();
-    if (musicRunning) return;
+    // Sans Web Audio (environnement sans AudioContext — le harnais de test,
+    // par exemple), ctx reste null et playStep() ne ferait jamais rien
+    // d'observable. Armer quand même le setInterval garderait le process Node
+    // vivant indéfiniment après la fin d'un script : plus aucun test ne
+    // pourrait se terminer tout seul une fois l'audio exercé une fois.
+    if (!ctx || musicRunning) return;
     musicRunning = true;
     noteIndex = 0;
     musicTimer = setInterval(playStep, STEP_TIME * 1000);
@@ -5398,6 +5419,169 @@ function createAudio() {
 }
 
 return { createAudio };
+})();
+__mod["src/core/storage.js"] = (function () {
+// Persistance locale, schéma versionné (§12).
+//
+// Une seule clé, `maxence-rider.v1`. Écriture débouncée (500 ms) : jamais de
+// localStorage.setItem synchrone dans la boucle de jeu à 60 fps — un accès
+// disque, même bref, n'a rien à faire dans un budget de 16 ms par frame.
+//
+// try/catch partout : en navigation privée iOS, localStorage peut lever à la
+// lecture comme à l'écriture. Un échec bascule sur un store mémoire (le jeu
+// continue de fonctionner pour la session en cours) et prévient une seule
+// fois, jamais en boucle.
+
+const CLE = 'maxence-rider.v1';
+const SCHEMA = 1;
+const DELAI_DEBOUNCE = 500;
+const TOP_N = 10;
+
+function etatParDefaut() {
+  return {
+    schema: SCHEMA,
+    settings: { sound: true, music: true, haptics: true, rider: 'skate', reducedFx: false },
+    progress: { levelsUnlocked: 1, stars: {}, totalScore: 0, ridersUnlocked: ['skate'] },
+    scores: {
+      landscape: { endless: [] },
+      portrait: { endless: [] },
+    },
+    stats: { runs: 0, crashes: 0, bestCombo: 0, totalDistance: 0 },
+  };
+}
+
+/** Fusionne un objet lu avec les valeurs par défaut, sans jamais faire confiance à sa forme. */
+function normaliser(brut) {
+  const def = etatParDefaut();
+  if (!brut || typeof brut !== 'object' || brut.schema !== SCHEMA) return def;
+  try {
+    return {
+      schema: SCHEMA,
+      settings: { ...def.settings, ...(brut.settings || {}) },
+      progress: { ...def.progress, ...(brut.progress || {}), stars: { ...(brut.progress?.stars || {}) } },
+      scores: {
+        landscape: { ...def.scores.landscape, ...(brut.scores?.landscape || {}) },
+        portrait: { ...def.scores.portrait, ...(brut.scores?.portrait || {}) },
+      },
+      stats: { ...def.stats, ...(brut.stats || {}) },
+    };
+  } catch {
+    return def;
+  }
+}
+
+function createStorage() {
+  let etat = etatParDefaut();
+  let disponible = true;
+  let avertiEchec = false;
+  let minuteur = null;
+
+  function avertirUneFois(message) {
+    if (avertiEchec) return;
+    avertiEchec = true;
+    console.warn(`[storage] ${message}`);
+  }
+
+  function charger() {
+    try {
+      if (typeof localStorage === 'undefined') { disponible = false; return; }
+      const brut = localStorage.getItem(CLE);
+      if (brut) etat = normaliser(JSON.parse(brut));
+    } catch {
+      disponible = false;
+      avertirUneFois('lecture impossible — les scores ne seront pas conservés sur cet appareil.');
+    }
+  }
+
+  function ecrireMaintenant() {
+    if (!disponible) return;
+    try {
+      localStorage.setItem(CLE, JSON.stringify(etat));
+    } catch {
+      disponible = false;
+      avertirUneFois('écriture impossible — les scores ne seront pas conservés sur cet appareil.');
+    }
+  }
+
+  /** Programme une écriture différée ; les appels rapprochés fusionnent en une seule. */
+  function planifierEcriture() {
+    if (!disponible) return;
+    if (minuteur) clearTimeout(minuteur);
+    minuteur = setTimeout(() => { minuteur = null; ecrireMaintenant(); }, DELAI_DEBOUNCE);
+  }
+
+  charger();
+
+  return {
+    get disponible() { return disponible; },
+    get settings() { return etat.settings; },
+    get progress() { return etat.progress; },
+    get stats() { return etat.stats; },
+
+    setSetting(cle, valeur) {
+      etat.settings[cle] = valeur;
+      planifierEcriture();
+    },
+
+    /** §6.6/§7 : cumul du score total, base du déblocage des riders. */
+    ajouterScoreCumule(points) {
+      etat.progress.totalScore += Math.max(0, points);
+      planifierEcriture();
+    },
+
+    debloquerRider(id) {
+      if (!etat.progress.ridersUnlocked.includes(id)) {
+        etat.progress.ridersUnlocked.push(id);
+        planifierEcriture();
+      }
+    },
+
+    riderDebloque(id) {
+      return etat.progress.ridersUnlocked.includes(id);
+    },
+
+    enregistrerStats({ crash = false, combo = 1, distance = 0 } = {}) {
+      etat.stats.runs++;
+      if (crash) etat.stats.crashes++;
+      etat.stats.bestCombo = Math.max(etat.stats.bestCombo, combo);
+      etat.stats.totalDistance += Math.max(0, distance);
+      planifierEcriture();
+    },
+
+    /**
+     * Ajoute un score au classement `categorie` (ex. "endless"), trié
+     * décroissant, tronqué à 10 (§12). `orientation` sépare paysage/portrait
+     * (§11 : scores non comparables entre les deux).
+     */
+    ajouterScore(orientation, categorie, entree) {
+      const bucket = etat.scores[orientation] || (etat.scores[orientation] = {});
+      const liste = bucket[categorie] || (bucket[categorie] = []);
+      liste.push(entree);
+      liste.sort((a, b) => b.score - a.score);
+      liste.length = Math.min(liste.length, TOP_N);
+      planifierEcriture();
+      return liste;
+    },
+
+    meilleursScores(orientation, categorie) {
+      return etat.scores[orientation]?.[categorie] || [];
+    },
+
+    /** §12 : bouton « Effacer mes données », avec confirmation côté appelant. */
+    effacerTout() {
+      etat = etatParDefaut();
+      if (minuteur) { clearTimeout(minuteur); minuteur = null; }
+      ecrireMaintenant();
+    },
+
+    /** Force l'écriture immédiate — utile avant de quitter la page. */
+    flush() {
+      if (minuteur) { clearTimeout(minuteur); minuteur = null; ecrireMaintenant(); }
+    },
+  };
+}
+
+return { createStorage };
 })();
 __mod["src/render/obstacles.js"] = (function () {
 // Rendu procédural 2D pur (vue de profil stricte en pixel art) pour les obstacles clés.
@@ -5633,11 +5817,12 @@ const { createParticleSystem } = __mod["src/game/particles.js"];
 const { createCamera } = __mod["src/game/camera.js"];
 const { createParallaxRenderer } = __mod["src/render/parallax.js"];
 const { createAudio } = __mod["src/core/audio.js"];
+const { createStorage } = __mod["src/core/storage.js"];
 const { dessinerCurb2D, dessinerRampe2D, dessinerCone2D } = __mod["src/render/obstacles.js"];
 const { THEMES, getTheme } = __mod["src/data/themes.js"];
 const { Family, ENTITIES } = __mod["src/data/entities.js"];
 
-const { getRider } = __mod["src/data/riders.js"];
+const { getRider, RIDERS } = __mod["src/data/riders.js"];
 
 const DEBUG = new URLSearchParams(location.search).has('debug');
 
@@ -5659,7 +5844,20 @@ const particles = createParticleSystem();
 const camera = createCamera();
 const parallax = createParallaxRenderer();
 const audio = createAudio();
+const storage = createStorage();
 const monde = { defilement: 0, prevDefilement: 0 };
+
+// §7 : chaque rider a son propre seuil de déblocage dans RIDERS[id].debloqueA
+// (progress.totalScore cumulé sur tous les runs, pas le score d'un seul run).
+// Lu depuis riders.js plutôt que dupliqué ici, pour qu'ajouter un 3e rider se
+// limite à ce fichier — voir "Ajouter un rider" dans le README.
+function debloquerRidersEligibles() {
+  for (const rider of Object.values(RIDERS)) {
+    if (!storage.riderDebloque(rider.id) && storage.progress.totalScore >= rider.debloqueA) {
+      storage.debloquerRider(rider.id);
+    }
+  }
+}
 
 let dernierSautAudio = null;
 let dernierComboAudio = 1;
@@ -5680,6 +5878,13 @@ let curseurEntites = 0;
 
 function solY() {
   return view.h - SOL;
+}
+
+/** §11 : retour haptique, désactivable dans les réglages. navigator.vibrate
+ * est ignoré silencieusement là où il n'existe pas (desktop, iOS Safari). */
+function vibrer(motif) {
+  if (!storage.settings.haptics) return;
+  try { navigator.vibrate?.(motif); } catch {}
 }
 
 function nouvelleSeed() {
@@ -5750,6 +5955,7 @@ function enregistrerTrickReussi() {
   const perfect = !!player.perfectLandingDernier;
   scoring.enregistrerTrick(label, points, player.x, player.y - 25, { perfect });
   audio.sfx.land(perfect);
+  vibrer(12); // §11 : trick réussi
 
   if (perfect) {
     camera.shake(3, 0.15);
@@ -5774,6 +5980,7 @@ function majCollisions(scrollAvant, scrollApres) {
       particles.reinitGrind();
       camera.shake(8, 0.35); // §10 : shake d'impact
       audio.sfx.crash();
+      vibrer([40, 30, 40]); // §11 : crash
       return;
     }
 
@@ -5805,7 +6012,7 @@ function majCollisions(scrollAvant, scrollApres) {
 
       if (entite.type === 'life_cross') {
         run.vies = Math.min(5, run.vies + 1);
-        scoring.afficherBandeau('+1 VIE ! 💚', '#2ed573', cx, cy - 25);
+        scoring.afficherBandeau('+1 VIE ! 💚', cx, cy - 25, '#2ed573');
         audio.sfx.coin();
         for (let k = 0; k < 6; k++) particles.etincelle(player.x, player.y, player.direction);
       } else {
@@ -5858,7 +6065,7 @@ function majJeu(dt) {
     player.niveauPalier = palierCalcule;
     run.vies = Math.min(5, run.vies + 1); // +1 vie gagnée tous les 10 000 points !
     const themeNiveau = getTheme(palierCalcule);
-    scoring.afficherBandeau(`⚡ NIVEAU ${palierCalcule} : ${themeNiveau.nom.toUpperCase()} ! +1 VIE 💚`, '#2ed573', player.x, player.y - 45);
+    scoring.afficherBandeau(`⚡ NIVEAU ${palierCalcule} : ${themeNiveau.nom.toUpperCase()} ! +1 VIE 💚`, player.x, player.y - 45, '#2ed573');
     audio.sfx.cleanLine();
     camera.shake(5, 0.3);
     for (let k = 0; k < 8; k++) particles.etincelle(player.x, player.y, player.direction);
@@ -6165,35 +6372,83 @@ function dessinerJeu(alpha) {
   dessinerHUD(theme);
 }
 
-// ── Records & Persistance ───────────────────────────────────────────────────
+// ── Records & Persistance (§12) ───────────────────────────────────────────────
 
-const STORAGE_HIGHSCORE = 'maxence_highscore';
-let highscore = 0;
-try {
-  if (typeof localStorage !== 'undefined') {
-    highscore = parseInt(localStorage.getItem(STORAGE_HIGHSCORE) || '0', 10) || 0;
-  }
-} catch {}
-
-function verifierNouveauRecord(score) {
-  if (score > highscore) {
-    highscore = score;
-    try {
-      if (typeof localStorage !== 'undefined') {
-        localStorage.setItem(STORAGE_HIGHSCORE, String(highscore));
-      }
-    } catch {}
-    return true;
-  }
-  return false;
+/** §12 : les classements sont séparés par orientation — non comparables. */
+function orientationActuelle() {
+  return view.portrait ? 'portrait' : 'landscape';
 }
 
-let selectedRider = 'skate';
+function meilleurScoreActuel() {
+  const liste = storage.meilleursScores(orientationActuelle(), 'endless');
+  return liste.length ? liste[0].score : 0;
+}
+
+/** Enregistre le résultat d'un run terminé : classement, stats, cumul (§7, §12). */
+function enregistrerFinDeRun(score, distM) {
+  const etaitRecord = score > meilleurScoreActuel();
+  storage.ajouterScore(orientationActuelle(), 'endless', {
+    score, distance: distM, combo: scoring.etat.meilleurCombo,
+    rider: player.stats.id, date: new Date().toISOString().slice(0, 10), seed: run.seed,
+  });
+  storage.enregistrerStats({ crash: true, combo: scoring.etat.meilleurCombo, distance: distM });
+  storage.ajouterScoreCumule(score);
+  debloquerRidersEligibles();
+  return etaitRecord;
+}
+
+let selectedRider = (storage.settings.rider === 'roller' && storage.riderDebloque('roller'))
+  ? 'roller' : 'skate';
 let nouveauRecordPartie = false;
+let confirmationEffacement = false;
+
+// §16 : toute action doit être accessible au clavier, pas seulement à la
+// souris/au tactile — les « boutons » du menu et des réglages sont dessinés
+// dans le canvas, pas de vrais éléments DOM focusables, donc la navigation et
+// la surbrillance du focus sont ré-implémentées ici plutôt qu'héritées du
+// navigateur.
+const ITEMS_MENU = ['skate', 'roller', 'commencer', 'scores', 'reglages'];
+let curseurMenu = 2; // démarre sur COMMENCER : Entrée directe = jouer, comme avant
+let curseurReglages = 0;
+
+function activerItemMenu(item) {
+  if (item === 'skate') { selectedRider = 'skate'; storage.setSetting('rider', 'skate'); audio.ensureResumed(); audio.sfx.coin(); return; }
+  if (item === 'roller') {
+    audio.ensureResumed();
+    if (storage.riderDebloque('roller')) { selectedRider = 'roller'; storage.setSetting('rider', 'roller'); audio.sfx.coin(); }
+    else audio.sfx.crash();
+    return;
+  }
+  if (item === 'commencer') { lancerPartie(); return; }
+  if (item === 'scores') { audio.ensureResumed(); jeu.go(State.SCORES); return; }
+  if (item === 'reglages') { audio.ensureResumed(); jeu.go(State.SETTINGS); return; }
+}
 
 function lancerPartie() {
   demarrerRun(nouvelleSeed(), { rider: selectedRider });
   jeu.go(State.PLAY);
+}
+
+/** §12 : options affichées/pilotées par l'écran RÉGLAGES. */
+function optionsReglages() {
+  return [
+    { cle: 'sound', label: 'Effets sonores', actif: !audio.isMuted() },
+    { cle: 'music', label: 'Musique', actif: storage.settings.music },
+    { cle: 'haptics', label: 'Vibrations', actif: storage.settings.haptics },
+    { cle: 'reducedFx', label: 'Réduire les effets', actif: storage.settings.reducedFx },
+  ];
+}
+
+/** Bascule un réglage par sa clé — un seul point d'entrée pour le clic et le clavier. */
+function basculerReglage(cle) {
+  if (cle === 'sound') { basculerSon(); return; }
+  if (cle === 'music') {
+    const actif = !storage.settings.music;
+    storage.setSetting('music', actif);
+    if (actif && jeu.is(State.PLAY)) audio.startMusic(); else audio.stopMusic();
+    return;
+  }
+  storage.setSetting(cle, !storage.settings[cle]);
 }
 
 // ── Écrans ───────────────────────────────────────────────────────────────────
@@ -6204,8 +6459,14 @@ const jeu = createStateMachine(State.BOOT, {
     update: (dt) => {
       input.update();
       monde.defilement += 50 * dt;
+      if (input.consume(Action.MENU_DOWN)) {
+        curseurMenu = (curseurMenu + 1) % ITEMS_MENU.length;
+      }
+      if (input.consume(Action.MENU_UP)) {
+        curseurMenu = (curseurMenu - 1 + ITEMS_MENU.length) % ITEMS_MENU.length;
+      }
       if (input.consume(Action.CONFIRM)) {
-        lancerPartie();
+        activerItemMenu(ITEMS_MENU[curseurMenu]);
       }
     },
     render: () => {
@@ -6277,10 +6538,11 @@ const jeu = createStateMachine(State.BOOT, {
       ctx.fillText('ARCADE 2D ACTION · SKATE & ROLLER', rightX, 52 + floatY);
 
       // Record
-      if (highscore > 0) {
+      const record = meilleurScoreActuel();
+      if (record > 0) {
         ctx.fillStyle = '#f2f0e6';
         ctx.font = '8px ui-monospace, monospace';
-        ctx.fillText(`🏆 RECORD : ${highscore} PTS`, rightX, 68);
+        ctx.fillText(`🏆 RECORD : ${record} PTS`, rightX, 68);
       }
 
       // Sélecteur de Rider (boutons tactiles larges)
@@ -6288,6 +6550,7 @@ const jeu = createStateMachine(State.BOOT, {
       const rx1 = Math.round(rightX - rw - 8);
       const rx2 = Math.round(rightX + 8);
       const ry = 86;
+      const rollerDebloque = storage.riderDebloque('roller');
 
       // Bouton Skate
       ctx.fillStyle = selectedRider === 'skate' ? '#4ed4c4' : '#242838';
@@ -6298,14 +6561,21 @@ const jeu = createStateMachine(State.BOOT, {
       ctx.font = 'bold 9px ui-monospace, monospace';
       ctx.fillText('🛹 SKATE', rx1 + rw / 2, ry + rh / 2);
 
-      // Bouton Roller
-      ctx.fillStyle = selectedRider === 'roller' ? '#4ed4c4' : '#242838';
+      // Bouton Roller — §7 : verrouillé tant que 25 000 pts cumulés pas atteints.
+      ctx.fillStyle = !rollerDebloque ? '#1a1c26' : (selectedRider === 'roller' ? '#4ed4c4' : '#242838');
       ctx.fillRect(rx2, ry, rw, rh);
-      ctx.fillStyle = selectedRider === 'roller' ? '#10131e' : '#141724';
+      ctx.fillStyle = !rollerDebloque ? '#141520' : (selectedRider === 'roller' ? '#10131e' : '#141724');
       ctx.fillRect(rx2 + 2, ry + 2, rw - 4, rh - 4);
-      ctx.fillStyle = selectedRider === 'roller' ? '#4ed4c4' : '#8a8d9e';
+      ctx.fillStyle = !rollerDebloque ? '#4a4d5e' : (selectedRider === 'roller' ? '#4ed4c4' : '#8a8d9e');
       ctx.font = 'bold 9px ui-monospace, monospace';
-      ctx.fillText('🛼 ROLLER', rx2 + rw / 2, ry + rh / 2);
+      if (rollerDebloque) {
+        ctx.fillText('🛼 ROLLER', rx2 + rw / 2, ry + rh / 2);
+      } else {
+        ctx.fillText('🔒 ROLLER', rx2 + rw / 2, ry + rh / 2 - 5);
+        ctx.font = '6px ui-monospace, monospace';
+        const manque = Math.max(0, RIDERS.roller.debloqueA - storage.progress.totalScore);
+        ctx.fillText(`${manque} pts restants`, rx2 + rw / 2, ry + rh / 2 + 7);
+      }
 
       // Gros Bouton Jouer
       const bw = 216, bh = 32;
@@ -6319,6 +6589,36 @@ const jeu = createStateMachine(State.BOOT, {
       ctx.fillStyle = '#f2f0e6';
       ctx.font = 'bold 11px ui-monospace, monospace';
       ctx.fillText('▶  COMMENCER LA PARTIE', rightX, by + bh / 2);
+
+      // Accès Scores / Réglages — petits boutons secondaires sous COMMENCER.
+      const sw = 104, sh = 20, sy = by + bh + 8;
+      const sx1 = Math.round(rightX - sw - 4);
+      const sx2 = Math.round(rightX + 4);
+      ctx.fillStyle = '#1c1f2c';
+      ctx.fillRect(sx1, sy, sw, sh);
+      ctx.fillRect(sx2, sy, sw, sh);
+      ctx.strokeStyle = '#4ed4c4';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(sx1 + 0.5, sy + 0.5, sw - 1, sh - 1);
+      ctx.strokeRect(sx2 + 0.5, sy + 0.5, sw - 1, sh - 1);
+      ctx.fillStyle = '#f2f0e6';
+      ctx.font = '7px ui-monospace, monospace';
+      ctx.fillText('🏆 SCORES', sx1 + sw / 2, sy + sh / 2);
+      ctx.fillText('⚙ RÉGLAGES', sx2 + sw / 2, sy + sh / 2);
+
+      // §16 : focus clavier visible — ces boutons sont dessinés dans le canvas,
+      // pas de vrais éléments DOM, donc pas de :focus-visible natif à hériter.
+      const zonesMenu = {
+        skate: [rx1 - 2, ry - 2, rw + 4, rh + 4],
+        roller: [rx2 - 2, ry - 2, rw + 4, rh + 4],
+        commencer: [bx - 2, by - 2, bw + 4, bh + 4],
+        scores: [sx1 - 2, sy - 2, sw + 4, sh + 4],
+        reglages: [sx2 - 2, sy - 2, sw + 4, sh + 4],
+      };
+      const [fx, fy, fw, fh] = zonesMenu[ITEMS_MENU[curseurMenu]];
+      ctx.strokeStyle = '#ffc93c';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(fx + 1, fy + 1, fw - 2, fh - 2);
 
       // Contrôles
       ctx.fillStyle = '#8a8d9e';
@@ -6351,7 +6651,7 @@ const jeu = createStateMachine(State.BOOT, {
       audio.stopMusic();
       const distM = Math.floor(player.distance / 10);
       const total = scoring.scoreTotal(distM);
-      nouveauRecordPartie = verifierNouveauRecord(total);
+      nouveauRecordPartie = enregistrerFinDeRun(total, distM);
     },
     update: () => {
       input.update();
@@ -6370,12 +6670,12 @@ const jeu = createStateMachine(State.BOOT, {
       if (nouveauRecordPartie) {
         texteCentre('🏆 NOUVEAU RECORD !', view.h / 2 - 36, '#ffc93c');
       }
-      texteCentre('GAME OVER', view.h / 2 - 20, '#ff5c3a');
+      texteCentre('PARTIE TERMINÉE', view.h / 2 - 20, '#ff5c3a');
 
       const distM = Math.floor(player.distance / 10);
       const scoreTotal = scoring.scoreTotal(distM);
       texteCentre(`Score : ${scoreTotal} pts`, view.h / 2 - 6, '#f2f0e6');
-      texteCentre(`Distance : ${distM} m · Record : ${highscore} pts`, view.h / 2 + 6, '#8a8d9e');
+      texteCentre(`Distance : ${distM} m · Record : ${meilleurScoreActuel()} pts`, view.h / 2 + 6, '#8a8d9e');
 
       // Boutons interactifs : Rejouer & Menu Principal / Choix Rider
       const bw1 = 96, bw2 = 136, bh = 24;
@@ -6407,6 +6707,110 @@ const jeu = createStateMachine(State.BOOT, {
       ctx.fillStyle = '#8a8d9e';
       ctx.font = '7px ui-monospace, monospace';
       ctx.fillText('R : REJOUER   ·   ÉCHAP : RETOUR AU MENU', view.w / 2, view.h / 2 + 54);
+    },
+  },
+  [State.SCORES]: {
+    enter: () => { input.clear(); },
+    update: () => {
+      input.update();
+      if (input.consume(Action.PAUSE) || input.consume(Action.RESTART)) jeu.go(State.MENU);
+    },
+    render: () => {
+      ctx.fillStyle = '#12131a';
+      ctx.fillRect(0, 0, view.w, view.h);
+      texteCentre('🏆 MEILLEURS SCORES', 20, '#ffc93c');
+      ctx.fillStyle = '#8a8d9e';
+      ctx.font = '7px ui-monospace, monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(view.portrait ? 'PORTRAIT' : 'PAYSAGE', view.w / 2, 32);
+
+      const scores = storage.meilleursScores(orientationActuelle(), 'endless');
+      if (scores.length === 0) {
+        // §10 : un écran vide invite à agir, jamais un silence.
+        texteCentre('Aucun run enregistré. Fais-en un.', view.h / 2, '#8a8d9e');
+      } else {
+        const y0 = 46;
+        scores.slice(0, 10).forEach((s, i) => {
+          const y = y0 + i * 14;
+          ctx.textAlign = 'left';
+          ctx.fillStyle = i === 0 ? '#ffc93c' : '#f2f0e6';
+          ctx.font = 'bold 8px ui-monospace, monospace';
+          ctx.fillText(`${i + 1}.`, 30, y);
+          ctx.fillText(`${s.score} pts`, 54, y);
+          ctx.fillStyle = '#8a8d9e';
+          ctx.font = '7px ui-monospace, monospace';
+          ctx.textAlign = 'right';
+          ctx.fillText(`${s.rider === 'roller' ? '🛼' : '🛹'} ×${s.combo}  ${s.distance}m  ${s.date}`, view.w - 30, y);
+        });
+      }
+
+      texteCentre('ÉCHAP OU R : RETOUR', view.h - 14, '#8a8d9e');
+    },
+  },
+  [State.SETTINGS]: {
+    enter: () => { input.clear(); confirmationEffacement = false; curseurReglages = 0; },
+    update: () => {
+      input.update();
+      if (input.consume(Action.PAUSE)) { jeu.go(State.MENU); return; }
+      const total = optionsReglages().length + 1; // + « Effacer mes données »
+      if (input.consume(Action.MENU_DOWN)) curseurReglages = (curseurReglages + 1) % total;
+      if (input.consume(Action.MENU_UP)) curseurReglages = (curseurReglages - 1 + total) % total;
+      if (input.consume(Action.CONFIRM)) {
+        const items = optionsReglages();
+        if (curseurReglages < items.length) {
+          basculerReglage(items[curseurReglages].cle);
+        } else if (confirmationEffacement) {
+          storage.effacerTout();
+          confirmationEffacement = false;
+          audio.sfx.crash();
+        } else {
+          confirmationEffacement = true;
+          audio.sfx.coin();
+        }
+      }
+    },
+    render: () => {
+      ctx.fillStyle = '#12131a';
+      ctx.fillRect(0, 0, view.w, view.h);
+      texteCentre('⚙ RÉGLAGES', 20, '#4ed4c4');
+
+      const items = optionsReglages();
+      items.forEach((it, i) => {
+        const y = 46 + i * 22;
+        ctx.textAlign = 'left';
+        ctx.fillStyle = '#f2f0e6';
+        ctx.font = '8px ui-monospace, monospace';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(it.label, 24, y);
+
+        ctx.textAlign = 'right';
+        ctx.fillStyle = it.actif ? '#4ed4c4' : '#4a4d5e';
+        ctx.font = 'bold 8px ui-monospace, monospace';
+        ctx.fillText(it.actif ? 'ACTIVÉ' : 'COUPÉ', view.w - 24, y);
+
+        // §16 : focus clavier visible, ré-implémenté (canvas, pas de DOM ici).
+        if (curseurReglages === i) {
+          ctx.strokeStyle = '#ffc93c';
+          ctx.lineWidth = 2;
+          ctx.strokeRect(12, y - 9, view.w - 24, 18);
+        }
+      });
+
+      const yEffacer = 46 + items.length * 22 + 10;
+      ctx.textAlign = 'center';
+      ctx.fillStyle = confirmationEffacement ? '#ff5c3a' : '#8a8d9e';
+      ctx.font = 'bold 8px ui-monospace, monospace';
+      ctx.fillText(
+        confirmationEffacement ? 'SÛR ? TOUCHER ENCORE POUR CONFIRMER' : '🗑 EFFACER MES DONNÉES',
+        view.w / 2, yEffacer,
+      );
+      if (curseurReglages === items.length) {
+        ctx.strokeStyle = '#ffc93c';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(view.w / 2 - 100, yEffacer - 9, 200, 18);
+      }
+
+      texteCentre('↑↓ NAVIGUER · ENTRÉE VALIDER · ÉCHAP : RETOUR', view.h - 14, '#8a8d9e');
     },
   },
 });
@@ -6467,29 +6871,67 @@ canvas.addEventListener('click', (e) => {
     const rx1 = Math.round(rightX - rw - 8);
     const rx2 = Math.round(rightX + 8);
 
+    // Un clic garde le curseur clavier synchronisé : après un clic sur
+    // SCORES puis retour au menu, Entrée doit rejouer ce même item, pas
+    // celui qu'on avait sélectionné au clavier avant.
+    const clicItem = (item) => { curseurMenu = ITEMS_MENU.indexOf(item); activerItemMenu(item); };
+
     // Clic / Touch sur Bouton Skate
     if (cx >= rx1 - 15 && cx <= rx1 + rw + 8 && cy >= ry - 8 && cy <= ry + rh + 8) {
-      selectedRider = 'skate';
-      audio.ensureResumed();
-      audio.sfx.coin();
+      clicItem('skate');
       return;
     }
-    // Clic / Touch sur Bouton Roller
+    // Clic / Touch sur Bouton Roller — verrouillé tant que non débloqué (§7).
     if (cx >= rx2 - 8 && cx <= rx2 + rw + 15 && cy >= ry - 8 && cy <= ry + rh + 8) {
-      selectedRider = 'roller';
-      audio.ensureResumed();
-      audio.sfx.coin();
+      clicItem('roller');
       return;
     }
-    // Clic / Touch sur COMMENCER ou bas de l'écran
+    // Clic / Touch sur COMMENCER
     const bw = 216, bh = 32, by = 126;
-    if (cx >= rightX - bw / 2 - 14 && cx <= rightX + bw / 2 + 14 && cy >= by - 6 && cy <= by + bh + 10) {
-      lancerPartie();
+    if (cx >= rightX - bw / 2 - 14 && cx <= rightX + bw / 2 + 14 && cy >= by - 6 && cy <= by + bh + 4) {
+      clicItem('commencer');
       return;
     }
-    if (cy > 120) {
-      lancerPartie();
+    // Boutons secondaires SCORES / RÉGLAGES, juste sous COMMENCER.
+    const sw = 104, sh = 20, sy = by + bh + 8;
+    const sx1 = Math.round(rightX - sw - 4);
+    const sx2 = Math.round(rightX + 4);
+    if (cx >= sx1 && cx <= sx1 + sw && cy >= sy && cy <= sy + sh) {
+      clicItem('scores');
+      return;
     }
+    if (cx >= sx2 && cx <= sx2 + sw && cy >= sy && cy <= sy + sh) {
+      clicItem('reglages');
+      return;
+    }
+    if (cy > sy + sh + 10) {
+      clicItem('commencer');
+    }
+  } else if (jeu.is(State.SCORES)) {
+    jeu.go(State.MENU);
+  } else if (jeu.is(State.SETTINGS)) {
+    const items = optionsReglages();
+    let clique = false;
+    items.forEach((it, i) => {
+      const y = 46 + i * 22;
+      if (cy >= y - 10 && cy <= y + 10) { curseurReglages = i; basculerReglage(it.cle); clique = true; }
+    });
+    if (!clique) {
+      const yEffacer = 46 + items.length * 22 + 10;
+      if (cy >= yEffacer - 10 && cy <= yEffacer + 10) {
+        curseurReglages = items.length;
+        if (confirmationEffacement) {
+          storage.effacerTout();
+          confirmationEffacement = false;
+          audio.sfx.crash();
+        } else {
+          confirmationEffacement = true;
+          audio.sfx.coin();
+        }
+        clique = true;
+      }
+    }
+    if (!clique && cy > view.h - 24) jeu.go(State.MENU);
   } else if (jeu.is(State.GAMEOVER)) {
     const bw1 = 96, bw2 = 136, bh = 24;
     const bx1 = Math.round(centreX - bw1 - 6);
@@ -6530,11 +6972,33 @@ document.addEventListener('visibilitychange', () => {
 
 // ── Boucle ───────────────────────────────────────────────────────────────────
 
+// §12 : « en cas d'échec, basculer sur un store mémoire et afficher une fois »
+// — storage.js gère déjà le fallback et logge en console, mais un console.warn
+// n'est jamais vu par le joueur. Affiché ici, par-dessus n'importe quel écran,
+// pendant les premières secondes plutôt que dans un bandeau de trick de 700 ms
+// (§6.6) — un avertissement système mérite d'être lisible plus longtemps.
+const DUREE_AVERTISSEMENT_STORAGE = 4;
+const avertissementStorageJusque = storage.disponible
+  ? 0
+  : performance.now() / 1000 + DUREE_AVERTISSEMENT_STORAGE;
+
+function dessinerAvertissementStorage() {
+  if (performance.now() / 1000 >= avertissementStorageJusque) return;
+  ctx.fillStyle = 'rgba(255, 92, 58, 0.92)';
+  ctx.fillRect(0, 0, view.w, 16);
+  ctx.fillStyle = '#12131a';
+  ctx.font = 'bold 7px ui-monospace, monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('⚠ Les scores ne seront pas conservés sur cet appareil.', view.w / 2, 8);
+}
+
 const boucle = createLoop({
   update: (dt) => jeu.update(dt),
   render: (alpha) => {
     renderer.begin();
     jeu.render(alpha);
+    dessinerAvertissementStorage();
     if (DEBUG) dessinerDebug();
     renderer.end();
   },
@@ -6565,10 +7029,11 @@ function dessinerDebug() {
 
 if (DEBUG) {
   window.__maxence = {
-    player, monde, view, jeu, boucle, input, atlas, run, scoring, particles, camera, parallax, audio,
+    player, monde, view, jeu, boucle, input, atlas, run, scoring, particles, camera, parallax, audio, storage,
     Action, State, RiderState, Family, ENTITIES, SAUTS, THEMES, getTheme, solY,
     get level() { return level; },
     get entites() { return entites; },
+    get selectedRider() { return selectedRider; },
     demarrerRun, respawn,
   };
 }

@@ -21,3 +21,10 @@ android/local.properties
 # lui est le vrai livrable attendu par le brief (§16 : ouverture en file://).
 dist/*.apk
 dist/*.apk.idsig
+dist/*.aab
+
+# Clé de signature de release : JAMAIS dans un repo, même privé. La perdre
+# empêche de futures mises à jour de l'app publiée ; la fuiter permet à
+# n'importe qui de signer une app qui se fait passer pour la vraie.
+android/keystore/
+android/keystore.properties

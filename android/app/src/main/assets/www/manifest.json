@@ -4,7 +4,7 @@
   "description": "Jeu d'arcade 2D de skate et roller en pixel art",
   "start_url": "./index.html",
   "display": "fullscreen",
-  "orientation": "any",
+  "orientation": "landscape",
   "background_color": "#0e111a",
   "theme_color": "#4ed4c4",
   "icons": [

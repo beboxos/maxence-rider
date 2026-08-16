@@ -118,3 +118,26 @@ button:focus-visible {
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
 }
+
+/* Le jeu (HUD compris) n'est pensé que pour le paysage. Sur mobile tenu en
+   portrait, l'app native verrouille déjà l'orientation (AndroidManifest) ;
+   ce filet couvre le cas web/PWA où rien n'empêche la rotation. */
+#pivoter {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  margin: 0;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 0 10vw;
+  background: var(--fond);
+  font-size: 18px;
+  letter-spacing: 0.04em;
+}
+
+@media (orientation: portrait) and (pointer: coarse) {
+  #pivoter { display: flex; }
+  #jeu, #ui { display: none; }
+}
