@@ -9,11 +9,14 @@
 
 import { drawFrame, flipPourDirection } from './sprite.js';
 import { frame as frameInfo } from '../core/assets.js';
+import { createDecorRenderer } from './decor.js';
 
 const LARGEUR_BATIMENT_SKYLINE = 36;
 const ESPACEMENT_BATIMENT_MOYEN = 80;
 
 export function createParallaxRenderer() {
+  const decor = createDecorRenderer();
+
   // 1. Étoiles fixes déterministes
   const etoiles = [];
   for (let i = 0; i < 50; i++) {
@@ -378,8 +381,11 @@ export function createParallaxRenderer() {
 
   function render(ctx, view, theme, solY, scroll, direction, entitesGaps = []) {
     dessinerCiel(ctx, view, theme, scroll, direction);
-    dessinerSkylineLointaine(ctx, view, theme, solY, scroll, direction);
-    dessinerCoucheMoyenne(ctx, view, theme, solY, scroll, direction);
+    // Ambiances avec atlas de décors : sprites ; sinon rendu procédural d'origine.
+    if (!decor.render(ctx, view, theme, solY, scroll, direction)) {
+      dessinerSkylineLointaine(ctx, view, theme, solY, scroll, direction);
+      dessinerCoucheMoyenne(ctx, view, theme, solY, scroll, direction);
+    }
     dessinerSolEtPremierPlan(ctx, view, theme, solY, scroll, direction, entitesGaps);
   }
 
