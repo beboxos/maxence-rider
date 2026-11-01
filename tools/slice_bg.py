@@ -109,6 +109,9 @@ THEMES = {
                  {'n': 'lantern.0', 'i': 21, 'cls': 'vol'}, {'n': 'lantern.1', 'i': 22, 'cls': 'vol'},
                  {'n': 'lantern.2', 'i': 23, 'cls': 'vol'}, {'n': 'lantern.3', 'i': 24, 'cls': 'vol'},
              ] + [{'n': 'tile.%d' % k, 'i': 25 + k, 'cls': 'sol'} for k in range(8)]},
+            # Bâtiments supplémentaires générés le 01/11 (labo, gymnase, cafétéria, chapelle, observatoire, résidence…).
+            {'fichier': 'atlas/theme3/Gemini_Generated_Image_vm064cvm064cvm06.jpeg',
+             'objets': [{'n': 'c.%d' % k, 'i': k, 'cls': 'bld', 'e': 0.18, 'lum': 1.35} for k in range(12)]},
         ],
     },
     # Chantier & lofts. Planche B inutilisable (restes de skyline/bâtiments fantômes) : à régénérer.

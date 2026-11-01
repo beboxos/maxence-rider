@@ -49,7 +49,7 @@ const AMBIANCES = {
   ecole: {
     atlas: BG_THEME3,
     skyline: ['sky.0'],
-    facades: ['clocktower', 'library', 'library', 'dorm', 'dorm', 'hall', 'hall'],
+    facades: ['clocktower', 'library', 'dorm', 'hall', ...Array.from({ length: 12 }, (_, i) => `c.${i}`)],
     mobilier: ['lamp.1', 'bench.0', 'banner.0', 'bikes.0', 'lamp.2', 'map', 'bin.0', 'banner.1', 'bench.1',
       'sign', 'bikes.1', 'lamp.0', 'bin.1'],
     lumineux: ['lamp.1', 'lamp.2'],
