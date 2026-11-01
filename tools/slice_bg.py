@@ -146,6 +146,21 @@ THEMES = {
              + bld(('arcade', 'ramen', 'conbini', 'billboard', 'tech', 'tower',
                     'karaoke', 'noodle', 'garage', 'machine', 'vending', 'izakaya'),
                    (4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16))},
+            # Planche B régénérée le 01/11 : mobilier, lune, nuages, fumées, drones. Tuiles trop pauvres : ignorées.
+            {'fichier': 'atlas/theme5/Gemini_Generated_Image_l69bxil69bxil69b.jpeg',
+             'objets': [
+                 {'n': 'lamp.0', 'i': 1, 'cls': 'prop'}, {'n': 'lamp.1', 'i': 2, 'cls': 'prop'},
+                 {'n': 'sign', 'i': 0, 'cls': 'prop'}, {'n': 'vendo', 'i': 3, 'cls': 'prop'},
+                 {'n': 'pole', 'i': 4, 'cls': 'prop'}, {'n': 'rail', 'i': 5, 'cls': 'prop'},
+                 {'n': 'screen', 'i': 6, 'cls': 'prop'}, {'n': 'bin', 'i': 7, 'cls': 'prop'},
+                 {'n': 'bench', 'i': 8, 'cls': 'prop'}, {'n': 'cart', 'i': 9, 'cls': 'prop'},
+                 {'n': 'moon', 'i': 13, 'cls': 'ciel'},
+                 {'n': 'cloud.0', 'i': 17, 'cls': 'ciel'}, {'n': 'cloud.1', 'i': 11, 'cls': 'ciel'},
+                 {'n': 'cloud.2', 'i': 10, 'cls': 'ciel'},
+                 {'n': 'smoke.0', 'i': 18, 'cls': 'ciel', 'e': 0.14}, {'n': 'smoke.1', 'i': 19, 'cls': 'ciel', 'e': 0.14},
+                 {'n': 'drone.0', 'i': 14, 'cls': 'vol', 'e': 0.2}, {'n': 'drone.1', 'i': 16, 'cls': 'vol', 'e': 0.2},
+                 {'n': 'drone.2', 'i': 20, 'cls': 'vol', 'e': 0.2},
+             ]},
         ],
     },
     # Obstacles : échelle fixée par la hitbox (entities.js), pas par la taille de la planche.

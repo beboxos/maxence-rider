@@ -56,7 +56,6 @@ const AMBIANCES = {
     lune: 'moon',
     nuages: ['cloud.0', 'cloud.1', 'lantern.1', 'lantern.3', 'lantern.0'],
   },
-  // Cyber : planche B (mobilier, lune, nuages) à régénérer, couches vides pour l'instant.
   chantier: {
     atlas: BG_THEME4,
     skyline: ['sky.0', 'sky.1', 'sky.2'],
@@ -74,7 +73,10 @@ const AMBIANCES = {
     skyline: ['sky.0', 'sky.1', 'sky.2'],
     facades: ['arcade', 'arcade', 'ramen', 'conbini', 'conbini', 'billboard', 'billboard', 'tech',
       'tower', 'tower', 'karaoke', 'karaoke', 'noodle', 'garage', 'machine', 'vending', 'izakaya'],
-    mobilier: [], lumineux: [], lune: null, nuages: [],
+    mobilier: ['lamp.0', 'vendo', 'rail', 'lamp.1', 'sign', 'pole', 'bench', 'screen', 'bin', 'cart', 'sign'],
+    lumineux: [],
+    lune: 'moon',
+    nuages: ['cloud.0', 'cloud.1', 'smoke.0', 'cloud.2', 'drone.0', 'smoke.1', 'drone.1', 'drone.2'],
   },
 };
 
