@@ -124,8 +124,9 @@ de présentation). Il reste 3 tâches, toutes chaînées à la même étape :
   (`src/game/saison.js`, du 27/10 au 04/11 à l'heure de Paris ; aperçu avec `?theme=halloween`).
 - **01/11/2026 — version 1.0.5 (code 6)** : décors en sprites (skatepark, chantier, cyber), obstacles/rails/rampes/bonus/trous
   en sprites, hit-stop + flash + éclats, saut tardif au bord d'un gap et corner correction. `dist/app-release.aab` reconstruit
-  par `toolsuild_aab_windows.ps1` et à envoyer dans la Play Console (un APK local ne s'installe pas par-dessus la version
-  du Play Store : signature différente).
+  par `toolsuild_aab_windows.ps1`, **envoyé le 01/11/2026 dans « Tests fermés - Alpha »** (release 6, déploiement complet) et
+  mis en examen par Google. Un APK local ne s'installe pas par-dessus la version du Play Store (signature différente) :
+  la mise à jour passe par le Store.
 
 - Le volume `T7` (exFAT) recrée des fichiers `._*` AppleDouble à chaque
   copie de ressources par Gradle, ce qui fait planter
