@@ -25,6 +25,7 @@ const SEUIL_OVERLAP_GRIND = 0.60; // §6.4 : chevauchement horizontal ≥ 60 %
 // perçoit pas, sans jamais rendre un obstacle plus facile à franchir en visant juste.
 const CORNER_PX = 4;        // pieds à ≤ 4 px sous le sommet d'un obstacle : on les remonte dessus
 const GRACE_GAP_S = 0.06;   // saut tardif au bord d'un gap : le sol « tient » encore 60 ms
+export const AIMANT_RAIL_PX = 16; // atterrir à ≤ 16 px d'un bout de rail l'accroche quand même
 
 /** Position écran d'une entité à `t` ∈ [0,1] du pas, entre deux positions de scroll. */
 function screenX(worldX, playerX, scrollAvant, scrollApres, direction, t) {
@@ -56,6 +57,27 @@ export function chevauchementHorizontal(entity, playerX, scroll, direction) {
   return inter / LARGEUR_RIDER;
 }
 
+/** Vrai si le centre du rider est au-dessus de l'entité, à AIMANT_RAIL_PX près de chaque bout. */
+function centreSurObstacle(entity, player, scrollApres) {
+  const ex = player.x + player.direction * (entity.worldX - scrollApres);
+  return Math.abs(player.x - ex) <= (entity.hitbox?.w || 12) / 2 + AIMANT_RAIL_PX;
+}
+
+/**
+ * Aimant à rail : un rider qui retombe juste avant ou juste après un rail (son corps ne le
+ * recouvre pas encore) est accroché si ses pieds franchissent le dessus du rail dans ce pas.
+ * Sans lui, un saut parti un peu trop tôt ou trop tard dépose le rider à côté du rail.
+ */
+function aimantRail(entity, player, solY, scrollApres) {
+  if (!(entity.grindable || entity.family === Family.RAIL)) return false;
+  const sommet = solY - (entity.elevation || 0) - entity.hitbox.h;
+  if (!(player.prevY < sommet - TOLERANCE && (player.vy >= 0 || player.y >= player.prevY))) return false;
+  const piedsMin = Math.min(player.prevY, player.y);
+  const piedsMax = Math.max(player.prevY, player.y);
+  if (!(piedsMin <= sommet + TOLERANCE && piedsMax >= sommet - TOLERANCE)) return false;
+  return centreSurObstacle(entity, player, scrollApres);
+}
+
 /**
  * Résout la collision rider/entité pour ce pas de simulation.
  * @param {number} scrollAvant  défilement du monde au début du pas
@@ -73,7 +95,7 @@ export function chevauchementHorizontal(entity, playerX, scroll, direction) {
 export function resoudre(entity, player, solY, scrollAvant, scrollApres) {
   if (entity.family === Family.DECOR) return 'none';
   if (!balayageX(entity, player.x, scrollAvant, scrollApres, player.direction)) {
-    return 'none';
+    return aimantRail(entity, player, solY, scrollApres) ? 'grind' : 'none';
   }
 
   // §6.6 : Collectibles (canettes / coins)
@@ -130,7 +152,7 @@ export function resoudre(entity, player, solY, scrollAvant, scrollApres) {
     const toucheSommet = piedsMin <= sommet + TOLERANCE && piedsMax >= sommet - TOLERANCE;
     if (toucheSommet) {
       const ratio = chevauchementHorizontal(entity, player.x, scrollApres, player.direction);
-      if (ratio >= SEUIL_OVERLAP_GRIND) {
+      if (ratio >= SEUIL_OVERLAP_GRIND || centreSurObstacle(entity, player, scrollApres)) {
         return 'grind';
       }
     }

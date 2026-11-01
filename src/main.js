@@ -8,7 +8,7 @@ import { createStateMachine, State } from './game/state.js';
 import { createPlayer, RiderState, SAUTS } from './game/player.js';
 import { createLevel } from './game/level.js';
 import { construireEntites, entitesActives } from './game/entities.js';
-import { resoudre } from './game/physics.js';
+import { resoudre, AIMANT_RAIL_PX } from './game/physics.js';
 import { createScoring } from './game/scoring.js';
 import { createParticleSystem } from './game/particles.js';
 import { createCamera } from './game/camera.js';
@@ -339,7 +339,8 @@ function majJeu(dt) {
       const entiteMax = ex + demiW;
       const riderMin = player.x - 14 / 2;
       const riderMax = player.x + 14 / 2;
-      const encoreDessus = riderMax > entiteMin && riderMin < entiteMax;
+      // Même marge que l'aimant à rail (physics.js) : un rail attrapé de justesse ne lâche pas aussitôt.
+      const encoreDessus = riderMax > entiteMin - AIMANT_RAIL_PX && riderMin < entiteMax + AIMANT_RAIL_PX;
       if (!encoreDessus) {
         const chute = (player.grindEntite.elevation || 0) > 0 || (solY() - player.grindY) > 2;
         player.sortirGrind({ chute });

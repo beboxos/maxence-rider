@@ -443,6 +443,17 @@ function joueurTest({ x = 100, y = SOL_TEST, prevY = y, auSol = y >= SOL_TEST, d
   verifier('CORNER : rider au sol contre le cone → crash', resoudre(cone, auSol, SOL_TEST, 0, 0) === 'crash');
 }
 {
+  // Aimant à rail : retomber à ≤ 16 px d'un bout de rail l'accroche, au-delà non.
+  const rail = (dx) => ({ family: Family.RAIL, worldX: 46 + dx, hitbox: { w: 92, h: 10 }, elevation: 4, grindable: true });
+  const sommet = SOL_TEST - 4 - 10;
+  const retombe = { ...joueurTest({ y: sommet + 1, prevY: sommet - 9, auSol: false }), vy: 600 };
+  verifier('RAIL : retombé à 10 px avant le bout → accroché', resoudre(rail(10), retombe, SOL_TEST, 0, 0) === 'grind');
+  verifier('RAIL : retombé à 20 px avant le bout → pas accroché', resoudre(rail(20), retombe, SOL_TEST, 0, 0) === 'none');
+  verifier('RAIL : retombé à 10 px après le bout → accroché', resoudre(rail(-92 - 10), retombe, SOL_TEST, 0, 0) === 'grind');
+  const monte = { ...joueurTest({ y: sommet - 9, prevY: sommet + 1, auSol: false }), vy: -600 };
+  verifier("RAIL : l'aimant ne retient pas un rider qui monte", resoudre(rail(10), monte, SOL_TEST, 0, 0) === 'none');
+}
+{
   const rampe = { family: Family.RAMP, worldX: 0, hitbox: { w: 40, h: 14 }, elevation: 0 };
   const auSol = joueurTest({});
   verifier('RAMP : jamais de crash au contact', resoudre(rampe, auSol, SOL_TEST, 0, 0) === 'ramp');
