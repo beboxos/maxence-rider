@@ -421,6 +421,28 @@ function joueurTest({ x = 100, y = SOL_TEST, prevY = y, auSol = y >= SOL_TEST, d
     resoudre(gap, enVol, SOL_TEST, 0, 0) === 'none');
 }
 {
+  // Coyote time au bord d'un gap : un saut tardif de quelques px passe, plus loin on tombe.
+  const gap = { family: Family.GAP, worldX: 45, hitbox: { w: 90, h: 0 }, elevation: 0 };
+  const auBord = { ...joueurTest({}), vitesse: 240 };
+  verifier('GAP : pas de chute au tout premier contact du bord',
+    resoudre(gap, auBord, SOL_TEST, 0, 0) === 'none');
+  const dedans = { ...joueurTest({}), vitesse: 240 };
+  verifier('GAP : chute une fois le rider engagé au-delà de la tolérance',
+    resoudre({ ...gap, worldX: 20 }, dedans, SOL_TEST, 0, 0) === 'crash');
+}
+{
+  // Corner correction : rater le sommet de ≤ 4 px remonte le rider, au-delà c'est un crash.
+  const cone = { family: Family.LOW, worldX: 0, hitbox: { w: 15, h: 17 }, elevation: 0 };
+  const curb = { family: Family.LOW, worldX: 0, hitbox: { w: 44, h: 14 }, elevation: 0, grindable: true };
+  const presque = { ...joueurTest({ y: SOL_TEST - 14, prevY: SOL_TEST - 15, auSol: false }), vy: 50 };
+  verifier('CORNER : cone raté de 3 px → remonté dessus', resoudre(cone, presque, SOL_TEST, 0, 0) === 'corner');
+  verifier('CORNER : curb raté de 3 px → grind', resoudre(curb, { ...presque, y: SOL_TEST - 11, prevY: SOL_TEST - 12 }, SOL_TEST, 0, 0) === 'grind');
+  const trop = { ...joueurTest({ y: SOL_TEST - 8, prevY: SOL_TEST - 9, auSol: false }), vy: 50 };
+  verifier('CORNER : cone raté de 9 px → crash', resoudre(cone, trop, SOL_TEST, 0, 0) === 'crash');
+  const auSol = { ...joueurTest({}), vy: 0 };
+  verifier('CORNER : rider au sol contre le cone → crash', resoudre(cone, auSol, SOL_TEST, 0, 0) === 'crash');
+}
+{
   const rampe = { family: Family.RAMP, worldX: 0, hitbox: { w: 40, h: 14 }, elevation: 0 };
   const auSol = joueurTest({});
   verifier('RAMP : jamais de crash au contact', resoudre(rampe, auSol, SOL_TEST, 0, 0) === 'ramp');

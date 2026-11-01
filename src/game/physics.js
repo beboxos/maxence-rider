@@ -21,6 +21,10 @@ export const LARGEUR_RIDER = 14; // hitbox du rider, plus étroite que le sprite
 const HAUTEUR_RIDER = 45;
 const TOLERANCE = 2; // px, absorbe les arrondis de rendu
 const SEUIL_OVERLAP_GRIND = 0.60; // §6.4 : chevauchement horizontal ≥ 60 %
+// Tolérances de « game feel » : elles pardonnent une erreur que le joueur ne
+// perçoit pas, sans jamais rendre un obstacle plus facile à franchir en visant juste.
+const CORNER_PX = 4;        // pieds à ≤ 4 px sous le sommet d'un obstacle : on les remonte dessus
+const GRACE_GAP_S = 0.06;   // saut tardif au bord d'un gap : le sol « tient » encore 60 ms
 
 /** Position écran d'une entité à `t` ∈ [0,1] du pas, entre deux positions de scroll. */
 function screenX(worldX, playerX, scrollAvant, scrollApres, direction, t) {
@@ -56,13 +60,15 @@ export function chevauchementHorizontal(entity, playerX, scroll, direction) {
  * Résout la collision rider/entité pour ce pas de simulation.
  * @param {number} scrollAvant  défilement du monde au début du pas
  * @param {number} scrollApres  défilement du monde à la fin du pas
- * @returns {'none'|'crash'|'ramp'|'clear'|'grind'|'collect'}
+ * @returns {'none'|'crash'|'ramp'|'clear'|'grind'|'collect'|'corner'}
  *   none    — aucun contact
  *   crash   — collision, §6.7
  *   ramp    — contact avec une rampe : bonus de trajectoire, jamais de crash
  *   clear   — franchi sans dommage (par-dessus un solide/rail, par-dessous un rail élevé)
  *   grind   — atterrissage descendant sur rail/curb avec overlap ≥ 60 %, §6.4
  *   collect — pièce / canette ramassée au vol, §6.6
+ *   corner  — pieds à ≤ CORNER_PX sous le sommet d'un obstacle non grindable :
+ *             l'appelant remonte le rider dessus (jamais un crash)
  */
 export function resoudre(entity, player, solY, scrollAvant, scrollApres) {
   if (entity.family === Family.DECOR) return 'none';
@@ -87,7 +93,14 @@ export function resoudre(entity, player, solY, scrollAvant, scrollApres) {
 
   if (entity.family === Family.GAP) {
     // §6.5 : tomber dedans exige d'être au sol ; un saut par-dessus n'y touche pas.
-    return player.auSol && player.y >= solY - TOLERANCE ? 'crash' : 'none';
+    if (!(player.auSol && player.y >= solY - TOLERANCE)) return 'none';
+    // Coyote time : le rider n'est « tombé » que lorsque son centre a dépassé le
+    // bord d'entrée d'au moins vitesse × GRACE_GAP_S. Un saut pressé un peu tard
+    // (auSol → false) passe alors avant le crash.
+    const demi = (entity.hitbox?.w || 12) / 2;
+    const ex = player.x + player.direction * (entity.worldX - scrollApres);
+    const profondeur = player.direction > 0 ? player.x - (ex - demi) : (ex + demi) - player.x;
+    return profondeur >= (player.vitesse || 0) * GRACE_GAP_S ? 'crash' : 'none';
   }
 
   const bas = solY - (entity.elevation || 0);
@@ -132,6 +145,15 @@ export function resoudre(entity, player, solY, scrollAvant, scrollApres) {
   // l'exacte tolérance près, ce qui validerait à tort "passé dessous" pour un
   // simple curb qu'on n'a pas sauté.
   if (entity.elevation > 0 && piedsMin >= bas - TOLERANCE) return 'clear';
+
+  // Corner correction : un saut qui rate le sommet de quelques pixels (≤ CORNER_PX)
+  // remonte sur l'obstacle au lieu de heurter sa face. Seul un rider déjà en
+  // l'air et qui ne monte plus est concerné ; roulé au sol contre l'obstacle,
+  // l'enfoncement vaut toute sa hauteur et le crash reste.
+  const enfoncement = piedsMax - sommet;
+  if (enfoncement <= CORNER_PX && player.prevY < sommet + CORNER_PX && !(player.vy < 0)) {
+    return estGrindable ? 'grind' : 'corner';
+  }
 
   return 'crash';
 }

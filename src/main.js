@@ -190,6 +190,13 @@ function majCollisions(scrollAvant, scrollApres) {
       return;
     }
 
+    if (resultat === 'corner') {
+      // Corner correction : on remonte les pieds sur le sommet, sans crash.
+      player.y = solY() - (entite.elevation || 0) - entite.hitbox.h;
+      player.vy = 0;
+      continue;
+    }
+
     if (resultat === 'clear') {
       if ((entite.family === Family.LOW || entite.family === Family.HIGH || entite.family === Family.GAP || entite.family === Family.RAIL) && !entite.cleared) {
         entite.cleared = true;
