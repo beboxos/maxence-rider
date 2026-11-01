@@ -29,7 +29,7 @@ SEUIL_ALPHA = 0.5     # après réduction : un pixel est opaque au-delà de ce t
 # `classe` pilote l'échelle : sky = bandes de skyline, bld = bâtiments, prop = accessoires,
 # ciel = lune/nuages, vol = chauves-souris/oiseaux, sol = tuiles de sol.
 ECHELLES = {'sky': 0.40, 'bld': 0.22, 'prop': 0.20, 'ciel': 0.22, 'vol': 0.12, 'sol': 0.17}
-DOUX = {'lamp.0', 'lamp.1', 'lamp.2', 'heart.0', 'heart.1'}   # halos de lumière : alpha conservé sur 4 niveaux
+DOUX = {'lamp.0', 'lamp.1', 'lamp.2', 'flood.0', 'flood.1', 'heart.0', 'heart.1'}   # halos de lumière : alpha conservé sur 4 niveaux
 
 
 def sk(prefix, indices, cls='sky'):
@@ -116,6 +116,25 @@ THEMES = {
              + bld(('frame', 'scaffold', 'factory', 'warehouse', 'cranetower', 'office',
                     'cabin', 'containers', 'workshop', 'silo', 'chimney', 'hoarding'),
                    (11, 12, 13, 14, 15, 10, 16, 18, 19, 20, 21, 23))},
+            # Planche B régénérée le 01/11 : accessoires propres, drones, tuiles. Clôtures et palissade se touchent
+            # (objet n° 6) : découpées par `clip`. La lune et les nuages viennent de l'ancienne planche B (n° 8, 7, 13),
+            # la nouvelle ayant un halo verdâtre autour de la lune.
+            {'fichier': 'atlas/theme4/Gemini_Generated_Image_7sat8q7sat8q7sat.jpeg',
+             'objets': [
+                 {'n': 'flood.0', 'i': 0, 'cls': 'prop'}, {'n': 'flood.1', 'i': 1, 'cls': 'prop'},
+                 {'n': 'barrier', 'i': 2, 'cls': 'prop'}, {'n': 'mixer', 'i': 3, 'cls': 'prop'},
+                 {'n': 'pipes', 'i': 4, 'cls': 'prop'}, {'n': 'pole', 'i': 5, 'cls': 'prop'},
+                 {'n': 'fence.0', 'i': 6, 'cls': 'prop', 'clip': (0, 0, 404, 4096)},
+                 {'n': 'fence.1', 'i': 6, 'cls': 'prop', 'clip': (404, 0, 752, 4096)},
+                 {'n': 'boarding', 'i': 6, 'cls': 'prop', 'clip': (752, 0, 4096, 4096)},
+                 {'n': 'sandbags', 'i': 7, 'cls': 'prop'}, {'n': 'dumpster', 'i': 8, 'cls': 'prop'},
+                 {'n': 'drones', 'i': 17, 'cls': 'vol', 'e': 0.2},
+             ] + [{'n': 'tile.%d' % k, 'i': 20 + k, 'cls': 'sol', 'e': 0.10} for k in range(4)]},
+            {'fichier': 'atlas/theme4/Gemini_Generated_Image_u6zkaju6zkaju6zk.jpeg',
+             'objets': [
+                 {'n': 'moon', 'i': 8, 'cls': 'ciel'},
+                 {'n': 'cloud.0', 'i': 7, 'cls': 'ciel'},   # le nuage n° 13 a une tache verte : écarté
+             ]},
         ],
     },
     # Quartier cyber arcade. Planche B inutilisable (skyline fantôme derrière les props) : à régénérer.

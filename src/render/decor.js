@@ -56,14 +56,18 @@ const AMBIANCES = {
     lune: 'moon',
     nuages: ['cloud.0', 'cloud.1', 'lantern.1', 'lantern.3', 'lantern.0'],
   },
-  // Planches B (mobilier, lune, nuages) à régénérer pour ces deux ambiances : couches vides.
+  // Cyber : planche B (mobilier, lune, nuages) à régénérer, couches vides pour l'instant.
   chantier: {
     atlas: BG_THEME4,
     skyline: ['sky.0', 'sky.1', 'sky.2'],
     facades: ['frame', 'frame', 'scaffold', 'scaffold', 'factory', 'factory', 'warehouse', 'warehouse',
       'cranetower', 'cranetower', 'office', 'cabin', 'containers', 'containers', 'workshop', 'silo',
       'chimney', 'hoarding'],
-    mobilier: [], lumineux: [], lune: null, nuages: [],
+    mobilier: ['flood.0', 'barrier', 'mixer', 'fence.0', 'pipes', 'pole', 'sandbags', 'flood.1', 'fence.1',
+      'dumpster', 'boarding', 'barrier', 'pole'],
+    lumineux: ['flood.0', 'flood.1'],
+    lune: 'moon',
+    nuages: ['cloud.0', 'drones'],
   },
   cyber: {
     atlas: BG_THEME5,
