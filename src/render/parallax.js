@@ -10,12 +10,14 @@
 import { drawFrame, flipPourDirection } from './sprite.js';
 import { frame as frameInfo } from '../core/assets.js';
 import { createDecorRenderer } from './decor.js';
+import { createObstacleRenderer } from './obstacle-sprites.js';
 
 const LARGEUR_BATIMENT_SKYLINE = 36;
 const ESPACEMENT_BATIMENT_MOYEN = 80;
 
 export function createParallaxRenderer() {
   const decor = createDecorRenderer();
+  const obstacles = createObstacleRenderer();
 
   // 1. Étoiles fixes déterministes
   const etoiles = [];
@@ -374,8 +376,11 @@ export function createParallaxRenderer() {
     for (const gap of entitesGaps) {
       const gapX = Math.round(view.w * 0.3 + direction * (gap.worldX - scroll));
       const w = gap.hitbox.w || 60;
-      ctx.fillStyle = '#06070a';
-      ctx.fillRect(Math.round(gapX - w / 2), solY, w, view.h - solY);
+      const g0 = Math.round(gapX - w / 2);
+      if (!obstacles.dessinerTrou(ctx, view, solY, g0, g0 + w, direction)) {
+        ctx.fillStyle = '#06070a';
+        ctx.fillRect(g0, solY, w, view.h - solY);
+      }
     }
   }
 

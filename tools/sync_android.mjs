@@ -21,6 +21,10 @@ copyFileSync(join(ROOT, 'dist/bundle.js'), join(wwwDir, 'dist/bundle.js'));
 
 // 2. Atlas, visuels et icônes
 copyFileSync(join(ROOT, 'assets/atlas.png'), join(wwwDir, 'assets/atlas.png'));
+mkdirSync(join(wwwDir, 'assets/bg'), { recursive: true });
+for (const n of ['theme1', 'theme4', 'theme5', 'obstacles']) {
+  copyFileSync(join(ROOT, `assets/bg/${n}.png`), join(wwwDir, `assets/bg/${n}.png`));
+}
 copyFileSync(join(ROOT, 'assets/menu_hero.png'), join(wwwDir, 'assets/menu_hero.png'));
 copyFileSync(join(ROOT, 'assets/icon-192.png'), join(wwwDir, 'assets/icon-192.png'));
 copyFileSync(join(ROOT, 'assets/icon-512.png'), join(wwwDir, 'assets/icon-512.png'));

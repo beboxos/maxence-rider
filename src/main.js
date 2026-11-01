@@ -13,6 +13,7 @@ import { createScoring } from './game/scoring.js';
 import { createParticleSystem } from './game/particles.js';
 import { createCamera } from './game/camera.js';
 import { createJuice } from './game/juice.js';
+import { createObstacleRenderer } from './render/obstacle-sprites.js';
 import { createParallaxRenderer } from './render/parallax.js';
 import { createAudio } from './core/audio.js';
 import { createStorage } from './core/storage.js';
@@ -42,6 +43,7 @@ const scoring = createScoring();
 const particles = createParticleSystem();
 const camera = createCamera();
 const juice = createJuice({ reduit: () => storage.settings.reducedFx });
+const obstacleSprites = createObstacleRenderer();
 const parallax = createParallaxRenderer();
 const audio = createAudio();
 const storage = createStorage();
@@ -436,6 +438,21 @@ function dessinerEntites(sol, scroll, theme) {
 
     if (entite.family === Family.GAP) {
       continue; // Les gaps sont gérés par le renderer de sol/parallaxe
+    }
+
+    // Sprites de l'atlas d'obstacles ; repli sur le rendu procédural tant qu'il n'est pas chargé.
+    if (entite.family !== Family.COLLECTIBLE || !entite.collected) {
+      if (obstacleSprites.dessiner(ctx, entite, x, sol, player.direction, run.tempsTotal)) {
+        if (DEBUG && entite.hitbox) {
+          const sommet = sol - (entite.elevation || 0) - entite.hitbox.h;
+          ctx.strokeStyle = 'rgba(255,92,58,0.8)';
+          ctx.lineWidth = 1;
+          ctx.strokeRect(x - entite.hitbox.w / 2 + 0.5, sommet + 0.5, entite.hitbox.w - 1, entite.hitbox.h - 1);
+        }
+        continue;
+      }
+    } else {
+      continue;
     }
 
     if (entite.family === Family.COLLECTIBLE) {
