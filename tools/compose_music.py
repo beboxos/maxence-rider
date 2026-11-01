@@ -45,6 +45,17 @@ THEMES = {
         batterie=dict(k=[0, 6, 8, 10], s=[4, 12], h=[0, 2, 4, 6, 8, 10, 12, 14], o=[14], t=[]),
         lead_reg=('A4', 'E6'), stab=[],
     ),
+    # 0 · Menu — ambiance calme, La mineur (pentatonique), pour l'écran titre, les scores et les réglages
+    'menu': dict(
+        titre='Menu', bpm=96, spb=16, swing=0.08, graine=7, tonique='A', gamme='pmin',
+        prog=[('A', 'min7'), ('F', 'maj7'), ('C', 'maj'), ('G', 'maj'),
+              ('A', 'min7'), ('F', 'maj7'), ('D', 'min7'), ('E', 'dom7')],
+        basse=[(0, 'r', 8), (8, '5', 8)],
+        arp=[0, 2, 1, 3, 2, 1, 3, 2], arp_oct=12, arp_pas=2,
+        rythme_lead=[(0, 6), (8, 4), (12, 4)],
+        batterie=dict(k=[0, 8], s=[], h=[4, 12], o=[], t=[]),
+        lead_reg=('E4', 'A5'), stab=[], pad=True,
+    ),
     # 2 · Maisons — lofi chaleureux, Do majeur, swing
     'maisons': dict(
         titre='Quartier', bpm=92, spb=16, swing=0.17, graine=23, tonique='C', gamme='pmaj',
@@ -90,6 +101,35 @@ THEMES = {
         batterie=dict(k=[0, 4, 8, 12], s=[4, 12], h=[2, 6, 10, 14], o=[], t=[], c=[4, 12]),
         lead_reg=('F#4', 'C#6'), stab=[], pad=True,
     ),
+}
+
+
+# Jingles : phrases écrites à la main, jouées une seule fois (fin de partie, nouveau record).
+def _jingle(titre, bpm, mesures, lead, bass, pad, drums):
+    return {'titre': titre, 'bpm': bpm, 'pasParMesure': 16, 'mesures': mesures, 'swing': 0.0, 'unefois': True,
+            'lead': [[p, n(m), ln, v] for p, m, ln, v in lead], 'bass': [[p, n(m), ln, v] for p, m, ln, v in bass],
+            'arp': [], 'pad': [[p, n(m), ln, v] for p, m, ln, v in pad], 'stab': [],
+            'drums': {k: sorted(drums.get(k, [])) for k in ('k', 's', 'h', 'o', 't', 'c')}}
+
+
+JINGLES = {
+    # Fin de partie : phrase descendante en La mineur, qui se résout doucement.
+    'gameover': _jingle('Game over', 84, 3,
+        lead=[(0, 'E5', 3, 80), (4, 'D5', 3, 78), (8, 'C5', 3, 76), (12, 'B4', 3, 74),
+              (16, 'C5', 3, 76), (20, 'A4', 3, 72), (24, 'G4', 3, 70), (28, 'E4', 3, 68), (32, 'A4', 14, 78)],
+        bass=[(0, 'A2', 8, 90), (8, 'F2', 8, 88), (16, 'D3', 8, 88), (24, 'E2', 8, 88), (32, 'A2', 14, 90)],
+        pad=[(0, 'A3', 16, 40), (0, 'C4', 16, 40), (0, 'E4', 16, 40), (16, 'D4', 16, 40), (16, 'F4', 16, 40),
+             (16, 'A4', 16, 40), (32, 'A3', 16, 42), (32, 'C4', 16, 42), (32, 'E4', 16, 42)],
+        drums={}),
+    # Nouveau record : fanfare ascendante en Do majeur.
+    'record': _jingle('Record', 124, 3,
+        lead=[(0, 'G4', 2, 85), (2, 'C5', 2, 85), (4, 'E5', 2, 85), (6, 'G5', 4, 90), (10, 'E5', 2, 80), (12, 'G5', 4, 90),
+              (16, 'A5', 2, 85), (18, 'G5', 2, 82), (20, 'E5', 2, 82), (22, 'F5', 2, 82), (24, 'D5', 2, 80), (26, 'G5', 6, 88),
+              (32, 'C6', 14, 95)],
+        bass=[(0, 'C3', 8, 90), (8, 'C3', 8, 88), (16, 'F2', 8, 90), (24, 'G2', 8, 90), (32, 'C3', 14, 92)],
+        pad=[(0, 'C4', 16, 45), (0, 'E4', 16, 45), (0, 'G4', 16, 45), (16, 'F4', 16, 45), (16, 'A4', 16, 45),
+             (16, 'C5', 16, 45), (32, 'C4', 16, 48), (32, 'E4', 16, 48), (32, 'G4', 16, 48), (32, 'C5', 16, 48)],
+        drums={'k': [0, 8, 16, 24, 32], 's': [12, 28, 36], 'h': [0, 4, 8, 12, 16, 20, 24, 28, 32], 'c': [36]}),
 }
 
 
@@ -346,6 +386,12 @@ def main():
             dossier_wav.mkdir(parents=True, exist_ok=True)
             pic = rendre_wav(theme, dossier_wav / f'{ident}.wav')
             print(f'   aperçu → {dossier_wav / (ident + ".wav")} (crête brute {pic:.2f})')
+    for ident, theme in JINGLES.items():
+        tous[ident] = theme
+        exporter_mid(theme, ROOT / 'assets' / 'music' / f'{ident}.mid')
+        print(f'{ident:9s} {theme["titre"]:9s} {theme["bpm"]} BPM  jingle de {theme["mesures"]} mesures')
+        if dossier_wav:
+            rendre_wav(theme, dossier_wav / f'{ident}.wav', boucles=1)
     js = ('// Généré par tools/compose_music.py — ne pas éditer à la main (relancer le script).\n'
           'export default ' + json.dumps(tous, separators=(',', ':'), ensure_ascii=False) + ';\n')
     (ROOT / 'src' / 'data' / 'music.js').write_text(js, encoding='utf-8')

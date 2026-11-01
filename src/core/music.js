@@ -47,6 +47,24 @@ const VOIX = {
   },
 };
 
+// Menu et jingles : même principe que les ambiances.
+VOIX.menu = {
+  vol: 1.1,
+  lead: { type: 'triangle', gain: 0.15, longueur: 1.9, vibrato: true }, bass: { type: 'sine', gain: 0.34 },
+  arp: { type: 'triangle', gain: 0.07, longueur: 2.4 }, pad: { type: 'sawtooth', gain: 0.035, filtre: 800 },
+  echo: { temps: 3, retour: 0.42, niveau: 0.26 }, batterie: { doux: true },
+};
+VOIX.gameover = {
+  vol: 1.3,
+  lead: { type: 'triangle', gain: 0.17, longueur: 1.7, vibrato: true }, bass: { type: 'sine', gain: 0.36 },
+  pad: { type: 'sawtooth', gain: 0.045, filtre: 700 }, echo: { temps: 3, retour: 0.38, niveau: 0.22 },
+};
+VOIX.record = {
+  vol: 1.1,
+  lead: { type: 'square', gain: 0.1, longueur: 1.3 }, bass: { type: 'triangle', gain: 0.27 },
+  pad: { type: 'sawtooth', gain: 0.04, filtre: 1500 }, echo: { temps: 3, retour: 0.3, niveau: 0.16 },
+};
+
 const hz = (midi) => 440 * 2 ** ((midi - 69) / 12);
 
 /** Index « par pas » d'un thème : evt[instrument][pas] = [[note, durée, vélocité], …]. Calculé une fois. */
@@ -240,37 +258,56 @@ export function createMusic({ getCtx, getOut, estMuet }) {
       if (!estMuet()) programmer(ctx, sortie, courant, pas, Math.max(prochain + swing, ctx.currentTime));
       prochain += pasS;
       pas = (pas + 1) % courant.idx.total;
+      if (pas === 0 && courant.theme.unefois) {   // jingle terminé : les notes déjà programmées s'achèvent seules
+        arreter();
+        return;
+      }
     }
+  }
+
+  function arreter() {
+    if (minuteur) clearInterval(minuteur);
+    minuteur = null;
+    courant = null;
+    enAttente = null;
+  }
+
+  function lancer(id) {
+    const ctx = getCtx();
+    const sortie = getOut();
+    if (!ctx || !sortie || minuteur) return;
+    preparerSortie(ctx, sortie);
+    courant = theme(id);
+    enAttente = null;
+    pas = 0;
+    prochain = ctx.currentTime + 0.06;
+    regler(ctx, prochain, courant);
+    minuteur = setInterval(tick, TICK_MS);
   }
 
   return {
     /** Choisit le thème : immédiat si la musique est arrêtée, sinon à la prochaine mesure. */
     setTheme(id) {
       const ident = MUSIQUES[id] ? id : THEME_DEFAUT;
+      if (MUSIQUES[ident].unefois) return;     // un jingle ne se choisit pas comme thème d'ambiance
       themeChoisi = ident;
-      if (minuteur) enAttente = ident !== courant.id ? ident : null;
+      if (minuteur && !courant.theme.unefois) enAttente = ident !== courant.id ? ident : null;
     },
     get theme() { return themeChoisi; },
+    /** Boucle de l'ambiance choisie. Interrompt un jingle en cours ; sans effet si une boucle joue déjà. */
     start() {
-      const ctx = getCtx();
-      const sortie = getOut();
-      if (!ctx || !sortie || minuteur) return;
-      preparerSortie(ctx, sortie);
-      courant = theme(themeChoisi);
-      enAttente = null;
-      pas = 0;
-      prochain = ctx.currentTime + 0.06;
-      regler(ctx, prochain, courant);
-      minuteur = setInterval(tick, TICK_MS);
+      if (minuteur && courant?.theme.unefois) arreter();
+      lancer(themeChoisi);
     },
-    stop() {
-      if (minuteur) clearInterval(minuteur);
-      minuteur = null;
-      courant = null;
-      enAttente = null;
+    /** Joue un jingle une seule fois (remplace la musique en cours). */
+    jouerUneFois(id) {
+      if (!MUSIQUES[id]?.unefois) return;
+      arreter();
+      lancer(id);
     },
+    stop: arreter,
     get enMarche() { return !!minuteur; },
   };
 }
 
-export const THEMES_MUSIQUE = Object.keys(MUSIQUES);
+export const THEMES_MUSIQUE = Object.keys(MUSIQUES).filter((id) => !MUSIQUES[id].unefois);

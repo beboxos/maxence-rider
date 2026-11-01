@@ -456,7 +456,8 @@ function joueurTest({ x = 100, y = SOL_TEST, prevY = y, auSol = y >= SOL_TEST, d
 {
   // Musique : un thème par ambiance, données cohérentes (générées par tools/compose_music.py).
   const MUSIQUES = (await import(pathToFileURL(join(ROOT, 'src/data/music.js')).href)).default;
-  verifier('musique : un thème par ambiance', Object.values(THEMES).every((t) => MUSIQUES[t.id]),
+  verifier('musique : menu, 2 jingles et un thème par ambiance',
+    ['menu', 'gameover', 'record'].every((id) => MUSIQUES[id]) && MUSIQUES.gameover.unefois && MUSIQUES.record.unefois && Object.values(THEMES).every((t) => MUSIQUES[t.id]),
     Object.values(THEMES).filter((t) => !MUSIQUES[t.id]).map((t) => t.id).join(','));
   for (const [id, m] of Object.entries(MUSIQUES)) {
     const total = m.pasParMesure * m.mesures;
@@ -464,11 +465,13 @@ function joueurTest({ x = 100, y = SOL_TEST, prevY = y, auSol = y >= SOL_TEST, d
     const ok = evts.every(([p, note, ln, v]) => p >= 0 && p < total && note >= 24 && note <= 108 && ln >= 1 && v > 0 && v <= 100)
       && Object.values(m.drums).every((l) => l.every((p) => p >= 0 && p < total));
     verifier(`musique ${id} : notes et pas valides (${total} pas, ${evts.length} notes)`, ok && m.bpm >= 80 && m.bpm <= 170);
-    verifier(`musique ${id} : mélodie, basse et batterie présentes`, m.lead.length > 10 && m.bass.length > 10 && m.drums.k.length > 0);
+    verifier(`musique ${id} : mélodie et basse présentes`, m.lead.length > (m.unefois ? 5 : 10) && m.bass.length > 3);
+    if (!m.unefois) verifier(`musique ${id} : batterie présente`, m.drums.k.length > 0);
   }
   const audioTest = createAudio();
   verifier('audio : setMusicTheme existe et ne plante pas sans AudioContext',
-    typeof audioTest.setMusicTheme === 'function' && (audioTest.setMusicTheme('cyber'), audioTest.startMusic(), audioTest.stopMusic(), true));
+    typeof audioTest.setMusicTheme === 'function' && typeof audioTest.jingle === 'function'
+      && (audioTest.setMusicTheme('cyber'), audioTest.startMusic(), audioTest.jingle('gameover'), audioTest.stopMusic(), true));
 }
 {
   const rampe = { family: Family.RAMP, worldX: 0, hitbox: { w: 40, h: 14 }, elevation: 0 };

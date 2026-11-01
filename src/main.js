@@ -84,6 +84,14 @@ function solY() {
 
 /** §11 : retour haptique, désactivable dans les réglages. navigator.vibrate
  * est ignoré silencieusement là où il n'existe pas (desktop, iOS Safari). */
+/** Lance (ou bascule vers) la musique d'un thème, si le réglage « Musique » est actif. */
+function musique(id) {
+  if (!storage.settings.music) return;
+  audio.setMusicTheme?.(id); // `?.` : modules en cache d'âges mixtes
+  audio.startMusic();
+}
+const themeMusicalCourant = () => getTheme(level?.palier || 1).id;
+
 function vibrer(motif) {
   if (!storage.settings.haptics) return;
   try { navigator.vibrate?.(motif); } catch {}
@@ -105,8 +113,6 @@ function demarrerRun(seed = nouvelleSeed(), { obstacles = true, rider = 'skate',
   particles.reinitGrind();
   camera.reset();
   juice.reset();
-  audio.setMusicTheme?.(getTheme(1).id); // chaque ambiance a son thème (tools/compose_music.py) ; `?.` : modules en cache d'âges mixtes
-  audio.startMusic();
 
   player.stats = getRider(rider);
   player.direction = direction;
@@ -707,7 +713,9 @@ function basculerReglage(cle) {
   if (cle === 'music') {
     const actif = !storage.settings.music;
     storage.setSetting('music', actif);
-    if (actif && jeu.is(State.PLAY)) audio.startMusic(); else audio.stopMusic();
+    if (!actif) audio.stopMusic();
+    else if (jeu.is(State.PLAY)) musique(themeMusicalCourant());
+    else if (!jeu.is(State.PAUSE) && !jeu.is(State.GAMEOVER)) musique('menu');
     return;
   }
   storage.setSetting(cle, !storage.settings[cle]);
@@ -717,7 +725,7 @@ function basculerReglage(cle) {
 
 const jeu = createStateMachine(State.BOOT, {
   [State.MENU]: {
-    enter: () => { input.clear(); audio.stopMusic(); },
+    enter: () => { input.clear(); musique('menu'); },
     update: (dt) => {
       input.update();
       monde.defilement += 50 * dt;
@@ -893,7 +901,7 @@ const jeu = createStateMachine(State.BOOT, {
     },
   },
   [State.PLAY]: {
-    enter: () => { input.clear(); audio.startMusic(); },
+    enter: () => { input.clear(); musique(themeMusicalCourant()); },
     update: majJeu,
     render: dessinerJeu,
   },
@@ -915,6 +923,7 @@ const jeu = createStateMachine(State.BOOT, {
       const distM = Math.floor(player.distance / 10);
       const total = scoring.scoreTotal(distM);
       nouveauRecordPartie = enregistrerFinDeRun(total, distM);
+      if (storage.settings.music) audio.jingle?.(nouveauRecordPartie ? 'record' : 'gameover');
     },
     update: () => {
       input.update();

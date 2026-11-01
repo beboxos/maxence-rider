@@ -194,6 +194,13 @@ export function createAudio() {
     music.stop();
   }
 
+  /** Jingle joué une seule fois (« gameover », « record »), à la place de la musique. */
+  function jingle(id) {
+    ensureResumed();
+    if (!ctx) return;
+    music.jouerUneFois(id);
+  }
+
   /** Thème de l'ambiance (id de THEMES) : pris en compte à la prochaine mesure si la musique joue. */
   function setMusicTheme(id) {
     music.setTheme(id);
@@ -209,6 +216,7 @@ export function createAudio() {
     startMusic,
     stopMusic,
     setMusicTheme,
+    jingle,
     music,
   };
 }
