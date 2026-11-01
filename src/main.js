@@ -17,6 +17,7 @@ import { createAudio } from './core/audio.js';
 import { createStorage } from './core/storage.js';
 import { dessinerCurb2D, dessinerRampe2D, dessinerCone2D } from './render/obstacles.js';
 import { THEMES, getTheme } from './data/themes.js';
+import { saisonCourante, themeForce, dessinerSaison } from './game/saison.js';
 import { Family, ENTITIES } from './data/entities.js';
 
 import { getRider, RIDERS } from './data/riders.js';
@@ -524,6 +525,9 @@ function dessinerHUD(theme) {
   }
 }
 
+// Décor de saison (Halloween du 27/10 au 04/11), décidé une fois au lancement
+const SAISON = saisonCourante(new Date(), themeForce());
+
 function dessinerJeu(alpha) {
   const y = player.prevY + (player.y - player.prevY) * alpha;
   const scroll = monde.prevDefilement + (monde.defilement - monde.prevDefilement) * alpha;
@@ -541,6 +545,7 @@ function dessinerJeu(alpha) {
 
   // Parallaxe 3 couches (§14)
   parallax.render(ctx, view, theme, sol, scroll, player.direction, gaps);
+  dessinerSaison(ctx, view, performance.now() / 1000, SAISON);
 
   dessinerEntites(sol, scroll, theme);
 
@@ -685,6 +690,7 @@ const jeu = createStateMachine(State.BOOT, {
     render: () => {
       const theme = getTheme(1);
       parallax.render(ctx, view, theme, solY(), monde.defilement, 1, []);
+      dessinerSaison(ctx, view, performance.now() / 1000, SAISON);
 
       // Voile sombre
       ctx.fillStyle = 'rgba(12, 14, 22, 0.82)';

@@ -10,24 +10,26 @@
 
 import { boot, ROOT } from './harness.mjs';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 // Modules purs (aucune dépendance DOM) : testables directement sous Node, sans
 // passer par le harnais canvas.
-const { resoudre, LARGEUR_RIDER, chevauchementHorizontal } = await import(join(ROOT, 'src/game/physics.js'));
-const { construireEntites, entitesActives } = await import(join(ROOT, 'src/game/entities.js'));
-const { placerSuivant, dernierObstacleX, premierObstacleX } = await import(join(ROOT, 'src/game/chunks.js'));
-const { TOUS_LES_CHUNKS, RESPIRATION, BONUS } = await import(join(ROOT, 'src/data/chunks.js'));
-const { VITESSE_MAX_LEAN } = await import(join(ROOT, 'src/data/tuning.js'));
-const { Family } = await import(join(ROOT, 'src/data/entities.js'));
-const { createPool } = await import(join(ROOT, 'src/core/pool.js'));
-const { createScoring } = await import(join(ROOT, 'src/game/scoring.js'));
-const { createParticleSystem } = await import(join(ROOT, 'src/game/particles.js'));
-const { THEMES, getTheme } = await import(join(ROOT, 'src/data/themes.js'));
-const { createCamera } = await import(join(ROOT, 'src/game/camera.js'));
-const { createParallaxRenderer } = await import(join(ROOT, 'src/render/parallax.js'));
-const { createAudio } = await import(join(ROOT, 'src/core/audio.js'));
-const { dessinerCurb2D, dessinerRampe2D, dessinerCone2D } = await import(join(ROOT, 'src/render/obstacles.js'));
-const { createStorage } = await import(join(ROOT, 'src/core/storage.js'));
+const { resoudre, LARGEUR_RIDER, chevauchementHorizontal } = await import(pathToFileURL(join(ROOT, 'src/game/physics.js')).href);
+const { construireEntites, entitesActives } = await import(pathToFileURL(join(ROOT, 'src/game/entities.js')).href);
+const { placerSuivant, dernierObstacleX, premierObstacleX } = await import(pathToFileURL(join(ROOT, 'src/game/chunks.js')).href);
+const { TOUS_LES_CHUNKS, RESPIRATION, BONUS } = await import(pathToFileURL(join(ROOT, 'src/data/chunks.js')).href);
+const { VITESSE_MAX_LEAN } = await import(pathToFileURL(join(ROOT, 'src/data/tuning.js')).href);
+const { Family } = await import(pathToFileURL(join(ROOT, 'src/data/entities.js')).href);
+const { createPool } = await import(pathToFileURL(join(ROOT, 'src/core/pool.js')).href);
+const { createScoring } = await import(pathToFileURL(join(ROOT, 'src/game/scoring.js')).href);
+const { createParticleSystem } = await import(pathToFileURL(join(ROOT, 'src/game/particles.js')).href);
+const { THEMES, getTheme } = await import(pathToFileURL(join(ROOT, 'src/data/themes.js')).href);
+const { saisonCourante, dessinerSaison } = await import(pathToFileURL(join(ROOT, 'src/game/saison.js')).href);
+const { createCamera } = await import(pathToFileURL(join(ROOT, 'src/game/camera.js')).href);
+const { createParallaxRenderer } = await import(pathToFileURL(join(ROOT, 'src/render/parallax.js')).href);
+const { createAudio } = await import(pathToFileURL(join(ROOT, 'src/core/audio.js')).href);
+const { dessinerCurb2D, dessinerRampe2D, dessinerCone2D } = await import(pathToFileURL(join(ROOT, 'src/render/obstacles.js')).href);
+const { createStorage } = await import(pathToFileURL(join(ROOT, 'src/core/storage.js')).href);
 
 let réussis = 0;
 const échecs = [];
@@ -1259,6 +1261,28 @@ localStorage.clear();
     M2.storage.meilleursScores('landscape', 'endless').some((s) => s.score === 777));
 }
 localStorage.clear();
+
+// ─── Décor de saison (Halloween) ─────────────────────────────────────────────
+titre('Décor de saison : Halloween du 27/10 au 04/11, heure de Paris');
+{
+  const jour = (iso) => saisonCourante(new Date(iso));
+  verifier('26/10 : pas de décor', jour('2026-10-26T12:00:00+01:00') === null);
+  verifier('27/10 : décor (4 jours avant)', jour('2026-10-27T12:00:00+01:00') === 'halloween');
+  verifier('31/10 : décor', jour('2026-10-31T12:00:00+01:00') === 'halloween');
+  verifier('04/11 : décor (4 jours après)', jour('2026-11-04T12:00:00+01:00') === 'halloween');
+  verifier('05/11 : plus de décor', jour('2026-11-05T12:00:00+01:00') === null);
+  verifier('en plein été : pas de décor', jour('2026-07-14T12:00:00+02:00') === null);
+  verifier('heure de Paris : 26/10 23h30 UTC = 27/10 à Paris', jour('2026-10-26T23:30:00Z') === 'halloween');
+  verifier('?theme=halloween force le décor', saisonCourante(new Date('2026-07-14T12:00:00Z'), 'halloween') === 'halloween');
+  verifier('?theme=aucun le coupe', saisonCourante(new Date('2026-10-31T12:00:00Z'), 'aucun') === null);
+  const appels = [];
+  const faux = new Proxy({}, { get: (_, nom) => (nom === 'createLinearGradient' ? () => ({ addColorStop() {} }) : (...a) => { appels.push(nom); } ), set: () => true });
+  dessinerSaison(faux, { w: 960, h: 540 }, 1.5, null);
+  verifier("hors saison : rien n'est dessiné", appels.length === 0);
+  dessinerSaison(faux, { w: 960, h: 540 }, 1.5, 'halloween');
+  verifier('en saison : teinte et décors dessinés', appels.includes('fillRect') && appels.filter((n) => n === 'fillText').length === 8);
+  verifier('le contexte est restauré (save/restore équilibrés)', appels.filter((n) => n === 'save').length === appels.filter((n) => n === 'restore').length);
+}
 
 // ─── Bilan ───────────────────────────────────────────────────────────────────
 console.log(`\n${réussis} réussis, ${échecs.length} échoués\n`);
