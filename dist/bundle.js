@@ -3687,6 +3687,12 @@ function createPlayer({ rider = 'skate', direction = 1 } = {}) {
     p.animSaut = 'ollie';
   };
 
+  /** Décollage automatique au contact d'une rampe (§6.5) : un ollie majoré par bonusRampe. */
+  p.declencherSautRampe = function declencherSautRampe() {
+    if (!p.auSol) return;
+    lancerSaut('ollie');
+  };
+
   return p;
 }
 
@@ -4216,6 +4222,10 @@ const LARGEUR_RIDER = 14; // hitbox du rider, plus étroite que le sprite (§3)
 const HAUTEUR_RIDER = 45;
 const TOLERANCE = 2; // px, absorbe les arrondis de rendu
 const SEUIL_OVERLAP_GRIND = 0.60; // §6.4 : chevauchement horizontal ≥ 60 %
+// Tolérances de « game feel » : elles pardonnent une erreur que le joueur ne
+// perçoit pas, sans jamais rendre un obstacle plus facile à franchir en visant juste.
+const CORNER_PX = 4;        // pieds à ≤ 4 px sous le sommet d'un obstacle : on les remonte dessus
+const GRACE_GAP_S = 0.06;   // saut tardif au bord d'un gap : le sol « tient » encore 60 ms
 
 /** Position écran d'une entité à `t` ∈ [0,1] du pas, entre deux positions de scroll. */
 function screenX(worldX, playerX, scrollAvant, scrollApres, direction, t) {
@@ -4251,13 +4261,15 @@ function chevauchementHorizontal(entity, playerX, scroll, direction) {
  * Résout la collision rider/entité pour ce pas de simulation.
  * @param {number} scrollAvant  défilement du monde au début du pas
  * @param {number} scrollApres  défilement du monde à la fin du pas
- * @returns {'none'|'crash'|'ramp'|'clear'|'grind'|'collect'}
+ * @returns {'none'|'crash'|'ramp'|'clear'|'grind'|'collect'|'corner'}
  *   none    — aucun contact
  *   crash   — collision, §6.7
  *   ramp    — contact avec une rampe : bonus de trajectoire, jamais de crash
  *   clear   — franchi sans dommage (par-dessus un solide/rail, par-dessous un rail élevé)
  *   grind   — atterrissage descendant sur rail/curb avec overlap ≥ 60 %, §6.4
  *   collect — pièce / canette ramassée au vol, §6.6
+ *   corner  — pieds à ≤ CORNER_PX sous le sommet d'un obstacle non grindable :
+ *             l'appelant remonte le rider dessus (jamais un crash)
  */
 function resoudre(entity, player, solY, scrollAvant, scrollApres) {
   if (entity.family === Family.DECOR) return 'none';
@@ -4282,7 +4294,14 @@ function resoudre(entity, player, solY, scrollAvant, scrollApres) {
 
   if (entity.family === Family.GAP) {
     // §6.5 : tomber dedans exige d'être au sol ; un saut par-dessus n'y touche pas.
-    return player.auSol && player.y >= solY - TOLERANCE ? 'crash' : 'none';
+    if (!(player.auSol && player.y >= solY - TOLERANCE)) return 'none';
+    // Coyote time : le rider n'est « tombé » que lorsque son centre a dépassé le
+    // bord d'entrée d'au moins vitesse × GRACE_GAP_S. Un saut pressé un peu tard
+    // (auSol → false) passe alors avant le crash.
+    const demi = (entity.hitbox?.w || 12) / 2;
+    const ex = player.x + player.direction * (entity.worldX - scrollApres);
+    const profondeur = player.direction > 0 ? player.x - (ex - demi) : (ex + demi) - player.x;
+    return profondeur >= (player.vitesse || 0) * GRACE_GAP_S ? 'crash' : 'none';
   }
 
   const bas = solY - (entity.elevation || 0);
@@ -4298,10 +4317,17 @@ function resoudre(entity, player, solY, scrollAvant, scrollApres) {
   const sommet = bas - entity.hitbox.h;
 
   // §6.4 : Détection du Grind sur rail / curb
-  // Condition : obstacle grindable, en l'air, vitesse descendante (vy >= 0),
-  // et les pieds franchissent la surface supérieure [sommet - TOLERANCE, sommet + TOLERANCE].
+  // Condition : obstacle grindable, en l'air *par rapport à cet obstacle*,
+  // vitesse descendante (vy >= 0), et les pieds franchissent la surface
+  // supérieure [sommet - TOLERANCE, sommet + TOLERANCE].
+  //
+  // On teste `player.prevY` contre `sommet` plutôt que `player.auSol` : pour un
+  // curb posé au ras du sol, majPhysique() a déjà reposé le rider sur le sol
+  // général (et remis auSol à true) avant que cette fonction ne s'exécute pour
+  // ce pas — auSol ment donc sur l'état réel vis-à-vis de CET obstacle précis.
   const estGrindable = entity.grindable || entity.family === Family.RAIL;
-  if (estGrindable && !player.auSol && (player.vy >= 0 || player.y >= player.prevY)) {
+  const etaitAuDessusDeLObstacle = player.prevY < sommet - TOLERANCE;
+  if (estGrindable && etaitAuDessusDeLObstacle && (player.vy >= 0 || player.y >= player.prevY)) {
     const toucheSommet = piedsMin <= sommet + TOLERANCE && piedsMax >= sommet - TOLERANCE;
     if (toucheSommet) {
       const ratio = chevauchementHorizontal(entity, player.x, scrollApres, player.direction);
@@ -4320,6 +4346,15 @@ function resoudre(entity, player, solY, scrollAvant, scrollApres) {
   // l'exacte tolérance près, ce qui validerait à tort "passé dessous" pour un
   // simple curb qu'on n'a pas sauté.
   if (entity.elevation > 0 && piedsMin >= bas - TOLERANCE) return 'clear';
+
+  // Corner correction : un saut qui rate le sommet de quelques pixels (≤ CORNER_PX)
+  // remonte sur l'obstacle au lieu de heurter sa face. Seul un rider déjà en
+  // l'air et qui ne monte plus est concerné ; roulé au sol contre l'obstacle,
+  // l'enfoncement vaut toute sa hauteur et le crash reste.
+  const enfoncement = piedsMax - sommet;
+  if (enfoncement <= CORNER_PX && player.prevY < sommet + CORNER_PX && !(player.vy < 0)) {
+    return estGrindable ? 'grind' : 'corner';
+  }
 
   return 'crash';
 }
@@ -4634,16 +4669,27 @@ function createParticleSystem() {
 return { createParticleSystem };
 })();
 __mod["src/game/camera.js"] = (function () {
-// Caméra dynamique : anticipation de vitesse et micro-secousses (§6.2, §10, §14).
+// Caméra dynamique : anticipation de vitesse, micro-secousses et suivi vertical
+// (§6.2, §10, §14).
 //
 // §6.2 : le rider est placé à 30 % de l'écran dans le sens de la marche, et la
 // caméra anticipe de speed × 0.25 px.
 // §10 : prefers-reduced-motion désactive le screen shake pour l'accessibilité.
+//
+// Suivi vertical : au-delà d'une certaine hauteur de saut (deadzone), le
+// rider sort du cadre virtuel restreint (270 px de haut). La caméra décale
+// alors tout le monde vers le bas, lissé, pour garder le rider visible sans
+// bouger sur les sauts ordinaires.
+
+const DEADZONE_HAUT = 60; // px depuis le haut de l'espace virtuel : sous ce seuil, pas de suivi
+const MARGE_HAUT = 24;    // px de marge gardée au-dessus du rider une fois le suivi actif
+const LISSAGE = 10;       // vitesse de rattrapage du lerp, en 1/s
 
 function createCamera() {
   let shakeIntensite = 0;
   let shakeDuree = 0;
   let shakeTemps = 0;
+  let suiviY = 0;
 
   function prefersReducedMotion() {
     if (typeof window === 'undefined' || !window.matchMedia) return false;
@@ -4657,12 +4703,18 @@ function createCamera() {
     shakeTemps = 0;
   }
 
-  function update(dt) {
+  function update(dt, playerY) {
     if (shakeTemps < shakeDuree) {
       shakeTemps += dt;
       if (shakeTemps >= shakeDuree) {
         shakeIntensite = 0;
       }
+    }
+
+    if (typeof playerY === 'number') {
+      const cible = playerY < DEADZONE_HAUT ? (DEADZONE_HAUT - playerY) + MARGE_HAUT : 0;
+      const t = Math.min(1, dt * LISSAGE);
+      suiviY += (cible - suiviY) * t;
     }
   }
 
@@ -4684,6 +4736,7 @@ function createCamera() {
       anticipationX,
       shakeX: sx,
       shakeY: sy,
+      suiviY,
       x: anticipationX + sx,
       y: sy,
     };
@@ -4693,12 +4746,1176 @@ function createCamera() {
     shakeIntensite = 0;
     shakeDuree = 0;
     shakeTemps = 0;
+    suiviY = 0;
   }
 
   return { shake, update, getOffset, reset, prefersReducedMotion };
 }
 
 return { createCamera };
+})();
+__mod["src/game/juice.js"] = (function () {
+// « Juice » : hit-stop, flash plein écran et éclats procéduraux.
+//
+// Complète camera.js (shake) et particles.js (sprites de l'atlas) sans les
+// toucher. Tout est poolé : aucun objet alloué en jeu.
+//
+// Réglage « Réduire les effets » (storage.settings.reducedFx) : plus de flash,
+// de hit-stop ni d'éclats — pour l'accessibilité (§10).
+
+const NB_ECLATS = 64;
+const GRAVITE = 380; // px/s² dans l'espace virtuel
+// Le tampon d'input dure peu (core/input.js) : un hit-stop long ferait perdre
+// un appui. On plafonne donc à 80 ms.
+const HIT_STOP_MAX = 0.08;
+
+function createJuice({ reduit = () => false } = {}) {
+  let hitStopRestant = 0;
+  let flashAlpha = 0;
+  let flashCouleur = '#ffffff';
+  const eclats = Array.from({ length: NB_ECLATS }, () => ({
+    vie: 0, duree: 1, x: 0, y: 0, vx: 0, vy: 0, taille: 1, couleur: '#fff', gravite: 1,
+  }));
+
+  /** Gèle la simulation `duree` secondes (le rendu continue). */
+  function hitStop(duree) {
+    if (reduit()) return;
+    hitStopRestant = Math.max(hitStopRestant, Math.min(HIT_STOP_MAX, duree));
+  }
+
+  /** Flash plein écran qui s'estompe vite. */
+  function flash(couleur = '#ffffff', alpha = 0.5) {
+    if (reduit()) return;
+    flashCouleur = couleur;
+    flashAlpha = Math.max(flashAlpha, alpha);
+  }
+
+  /**
+   * Gerbe d'éclats. `dirX` (-1, 0, 1) oriente le jet ; `force` en px/s.
+   * Tailles, vitesses et durées varient : un lot de copies identiques se voit.
+   */
+  function gerbe(x, y, { n = 8, couleurs = ['#ffffff', '#ffc93c'], force = 120, dirX = 0, gravite = 1 } = {}) {
+    if (reduit()) return;
+    let restant = n;
+    for (const e of eclats) {
+      if (restant === 0) break;
+      if (e.vie > 0) continue;
+      const angle = dirX === 0
+        ? Math.random() * Math.PI * 2
+        : (-Math.PI / 2) + dirX * (0.3 + Math.random() * 1.1);
+      const v = force * (0.4 + Math.random() * 0.8);
+      e.x = x; e.y = y;
+      e.vx = Math.cos(angle) * v + dirX * force * 0.3;
+      e.vy = Math.sin(angle) * v;
+      e.duree = e.vie = 0.25 + Math.random() * 0.4;
+      e.taille = Math.random() < 0.25 ? 2 : 1;
+      e.couleur = couleurs[(Math.random() * couleurs.length) | 0];
+      e.gravite = gravite;
+      restant--;
+    }
+  }
+
+  /**
+   * À appeler au début de chaque pas de simulation.
+   * Renvoie true si ce pas est gelé (le caller doit alors sortir).
+   */
+  function gele(dt) {
+    if (hitStopRestant <= 0) return false;
+    hitStopRestant -= dt;
+    return true;
+  }
+
+  /** Éclats et flash vivent en temps réel, même pendant un hit-stop. */
+  function update(dt) {
+    flashAlpha = Math.max(0, flashAlpha - dt * 4);
+    for (const e of eclats) {
+      if (e.vie <= 0) continue;
+      e.vie -= dt;
+      e.vx *= 1 - Math.min(1, dt * 1.5);
+      e.vy += GRAVITE * e.gravite * dt;
+      e.x += e.vx * dt;
+      e.y += e.vy * dt;
+    }
+  }
+
+  function dessinerEclats(ctx) {
+    for (const e of eclats) {
+      if (e.vie <= 0) continue;
+      ctx.globalAlpha = Math.min(1, (e.vie / e.duree) * 1.6);
+      ctx.fillStyle = e.couleur;
+      ctx.fillRect(Math.round(e.x), Math.round(e.y), e.taille, e.taille);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function dessinerFlash(ctx, view) {
+    if (flashAlpha <= 0.01) return;
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, flashAlpha);
+    ctx.fillStyle = flashCouleur;
+    ctx.fillRect(0, 0, view.w, view.h);
+    ctx.restore();
+  }
+
+  function reset() {
+    hitStopRestant = 0;
+    flashAlpha = 0;
+    for (const e of eclats) e.vie = 0;
+  }
+
+  return { hitStop, flash, gerbe, gele, update, dessinerEclats, dessinerFlash, reset };
+}
+
+return { createJuice };
+})();
+__mod["assets/bg/obstacles.js"] = (function () {
+// Généré par tools/slice_bg.py — ne pas éditer à la main.
+const __default = {
+ "sheet": "bg/obstacles.png",
+ "frames": {
+  "qp.0": {
+   "x": 0,
+   "y": 0,
+   "w": 55,
+   "h": 30
+  },
+  "qp.1": {
+   "x": 56,
+   "y": 0,
+   "w": 51,
+   "h": 28
+  },
+  "stairs.0": {
+   "x": 108,
+   "y": 0,
+   "w": 42,
+   "h": 31
+  },
+  "stairs.1": {
+   "x": 151,
+   "y": 0,
+   "w": 42,
+   "h": 18
+  },
+  "curb.0": {
+   "x": 194,
+   "y": 0,
+   "w": 44,
+   "h": 13
+  },
+  "curb.1": {
+   "x": 239,
+   "y": 0,
+   "w": 44,
+   "h": 13
+  },
+  "cone": {
+   "x": 284,
+   "y": 0,
+   "w": 18,
+   "h": 17
+  },
+  "rail.0": {
+   "x": 303,
+   "y": 0,
+   "w": 92,
+   "h": 12
+  },
+  "rail.1": {
+   "x": 396,
+   "y": 0,
+   "w": 92,
+   "h": 10
+  },
+  "rail.2": {
+   "x": 489,
+   "y": 0,
+   "w": 90,
+   "h": 10
+  },
+  "rail.3": {
+   "x": 580,
+   "y": 0,
+   "w": 90,
+   "h": 17
+  },
+  "rail.long": {
+   "x": 671,
+   "y": 0,
+   "w": 160,
+   "h": 13
+  },
+  "can.0": {
+   "x": 832,
+   "y": 0,
+   "w": 8,
+   "h": 13
+  },
+  "can.1": {
+   "x": 841,
+   "y": 0,
+   "w": 13,
+   "h": 13
+  },
+  "can.2": {
+   "x": 855,
+   "y": 0,
+   "w": 14,
+   "h": 8
+  },
+  "can.3": {
+   "x": 870,
+   "y": 0,
+   "w": 13,
+   "h": 13
+  },
+  "coin.0": {
+   "x": 884,
+   "y": 0,
+   "w": 12,
+   "h": 12
+  },
+  "coin.1": {
+   "x": 897,
+   "y": 0,
+   "w": 11,
+   "h": 13
+  },
+  "coin.2": {
+   "x": 909,
+   "y": 0,
+   "w": 4,
+   "h": 12
+  },
+  "coin.3": {
+   "x": 914,
+   "y": 0,
+   "w": 7,
+   "h": 12
+  },
+  "heart.0": {
+   "x": 922,
+   "y": 0,
+   "w": 15,
+   "h": 16
+  },
+  "heart.1": {
+   "x": 938,
+   "y": 0,
+   "w": 15,
+   "h": 15
+  },
+  "gap.left": {
+   "x": 954,
+   "y": 0,
+   "w": 51,
+   "h": 40
+  },
+  "gap.right": {
+   "x": 0,
+   "y": 41,
+   "w": 45,
+   "h": 38
+  },
+  "gap.pit": {
+   "x": 46,
+   "y": 41,
+   "w": 46,
+   "h": 40
+  },
+  "barrier": {
+   "x": 93,
+   "y": 41,
+   "w": 34,
+   "h": 29
+  },
+  "hydrant.0": {
+   "x": 128,
+   "y": 41,
+   "w": 14,
+   "h": 22
+  },
+  "hydrant.1": {
+   "x": 143,
+   "y": 41,
+   "w": 14,
+   "h": 22
+  },
+  "bin.0": {
+   "x": 158,
+   "y": 41,
+   "w": 23,
+   "h": 32
+  },
+  "bin.1": {
+   "x": 182,
+   "y": 41,
+   "w": 28,
+   "h": 32
+  },
+  "planter": {
+   "x": 211,
+   "y": 41,
+   "w": 42,
+   "h": 26
+  },
+  "bench.0": {
+   "x": 254,
+   "y": 41,
+   "w": 51,
+   "h": 26
+  },
+  "bench.1": {
+   "x": 306,
+   "y": 41,
+   "w": 51,
+   "h": 26
+  },
+  "vending.0": {
+   "x": 358,
+   "y": 41,
+   "w": 31,
+   "h": 40
+  },
+  "vending.1": {
+   "x": 390,
+   "y": 41,
+   "w": 31,
+   "h": 40
+  },
+  "cabinet": {
+   "x": 422,
+   "y": 41,
+   "w": 31,
+   "h": 41
+  },
+  "brick": {
+   "x": 454,
+   "y": 41,
+   "w": 22,
+   "h": 12
+  },
+  "barrier2": {
+   "x": 477,
+   "y": 41,
+   "w": 24,
+   "h": 19
+  }
+ }
+};
+
+return { default: __default };
+})();
+__mod["src/render/obstacle-sprites.js"] = (function () {
+// Obstacles, bonus et trous dessinés avec l'atlas assets/bg/obstacles.png.
+//
+// Les sprites sont dessinés « tournés vers la droite » (rampes qui montent vers la droite) ;
+// ils sont retournés quand le niveau va vers la gauche (direction < 0). Les hitboxes restent
+// celles de data/entities.js : les sprites ont été réduits à leur taille (tools/slice_bg.py).
+//
+// `dessiner` renvoie false tant que la texture n'est pas chargée : l'appelant retombe alors
+// sur le rendu procédural d'origine (render/obstacles.js).
+
+const OBSTACLES = __mod["assets/bg/obstacles.js"].default;
+
+const BASE = 'assets/';
+
+// Type d'entité → frames possibles (la variante est choisie une fois par entité, de façon stable).
+const VARIANTES = {
+  curb: ['curb.0', 'curb.1'],
+  cone: ['cone'],
+  hydrant: ['hydrant.0', 'hydrant.1'],
+  bin: ['bin.0', 'bin.1'],
+  planter: ['planter'],
+  bench: ['bench.0', 'bench.1'],
+  vending: ['vending.0', 'vending.1'],
+  quarterpipe: ['qp.0', 'qp.1'],
+  stairs: ['stairs.0', 'stairs.1'],
+  rail: ['rail.0', 'rail.1'],
+  railKinked: ['rail.2', 'rail.3'],
+  railLong: ['rail.long'],
+};
+const CANETTE = ['can.0', 'can.1', 'can.2', 'can.3'];   // type 'coin' : canette, 4 images de rotation
+const CROIX = ['heart.0', 'heart.1'];                   // type 'life_cross' : pulsation
+
+function createObstacleRenderer() {
+  const { frames } = OBSTACLES;
+  const img = new Image();
+  img.src = BASE + OBSTACLES.sheet;
+  const pret = () => img.complete && img.naturalWidth > 0;
+
+  /** Entier stable dérivé de la position monde : même entité → même variante à chaque frame. */
+  function variante(entite, n) {
+    return Math.abs(Math.floor(entite.worldX * 7.31)) % n;
+  }
+
+  function blit(ctx, f, cx, bas, direction) {
+    const gauche = Math.round(cx - f.w / 2);
+    const haut = Math.round(bas - f.h);
+    if (direction < 0) {
+      ctx.save();
+      ctx.translate(gauche + f.w, 0);
+      ctx.scale(-1, 1);
+      ctx.drawImage(img, f.x, f.y, f.w, f.h, 0, haut, f.w, f.h);
+      ctx.restore();
+    } else {
+      ctx.drawImage(img, f.x, f.y, f.w, f.h, gauche, haut, f.w, f.h);
+    }
+  }
+
+  /**
+   * Dessine une entité (obstacle, rampe, rail, canette, bonus de vie).
+   * @param {number} x     centre de l'entité à l'écran
+   * @param {number} sol   ordonnée du sol
+   * @param {number} temps temps de jeu en secondes (animation des bonus)
+   * @returns {boolean} faux si ce type n'a pas de sprite ou si la texture n'est pas prête
+   */
+  function dessiner(ctx, entite, x, sol, direction, temps) {
+    if (!pret()) return false;
+    const bas = sol - (entite.elevation || 0);
+
+    if (entite.type === 'coin') {
+      const f = frames[CANETTE[Math.floor(temps * 10) % CANETTE.length]];
+      const bob = Math.sin(temps * 6 + x * 0.05) * 1.5;
+      blit(ctx, f, x, bas + f.h / 2 + bob, direction);
+      return true;
+    }
+    if (entite.type === 'life_cross') {
+      const f = frames[CROIX[Math.floor(temps * 4) % CROIX.length]];
+      const bob = Math.sin(temps * 5 + x * 0.05) * 3;
+      blit(ctx, f, x, bas + f.h / 2 + bob, direction);
+      return true;
+    }
+    const noms = VARIANTES[entite.type];
+    if (!noms) return false;
+    blit(ctx, frames[noms[variante(entite, noms.length)]], x, bas, direction);
+    return true;
+  }
+
+  /**
+   * Trou dans le sol entre `gauche` et `droite` (écran) : fond de fosse répété, bords éclatés
+   * de chaque côté. Renvoie false si la texture n'est pas prête (l'appelant remplit en noir).
+   */
+  function dessinerTrou(ctx, view, solY, gauche, droite, direction) {
+    if (!pret()) return false;
+    const fosse = frames['gap.pit'];
+    const profondeur = view.h - solY;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(gauche, solY, droite - gauche, profondeur);
+    ctx.clip();
+    for (let x = gauche; x < droite; x += fosse.w) {
+      ctx.drawImage(img, fosse.x, fosse.y, fosse.w, fosse.h, Math.round(x), solY, fosse.w, Math.min(fosse.h, profondeur));
+    }
+    ctx.restore();
+    // Le bord « avant » est celui par lequel le rider arrive : à gauche si direction > 0.
+    const bordG = frames[direction > 0 ? 'gap.left' : 'gap.right'];
+    const bordD = frames[direction > 0 ? 'gap.right' : 'gap.left'];
+    ctx.drawImage(img, bordG.x, bordG.y, bordG.w, bordG.h, Math.round(gauche - bordG.w + 3), solY, bordG.w, Math.min(bordG.h, profondeur));
+    ctx.drawImage(img, bordD.x, bordD.y, bordD.w, bordD.h, Math.round(droite - 3), solY, bordD.w, Math.min(bordD.h, profondeur));
+    return true;
+  }
+
+  return { dessiner, dessinerTrou };
+}
+
+return { createObstacleRenderer };
+})();
+__mod["assets/bg/theme1.js"] = (function () {
+// Généré par tools/slice_bg.py — ne pas éditer à la main.
+const __default = {
+ "sheet": "bg/theme1.png",
+ "frames": {
+  "sky.0": {
+   "x": 0,
+   "y": 0,
+   "w": 612,
+   "h": 75
+  },
+  "sky.1": {
+   "x": 0,
+   "y": 76,
+   "w": 612,
+   "h": 68
+  },
+  "sky.2": {
+   "x": 0,
+   "y": 145,
+   "w": 612,
+   "h": 70
+  },
+  "cafe": {
+   "x": 613,
+   "y": 145,
+   "w": 69,
+   "h": 130
+  },
+  "skateshop": {
+   "x": 683,
+   "y": 145,
+   "w": 65,
+   "h": 92
+  },
+  "market": {
+   "x": 749,
+   "y": 145,
+   "w": 102,
+   "h": 93
+  },
+  "arcade": {
+   "x": 852,
+   "y": 145,
+   "w": 59,
+   "h": 82
+  },
+  "laundry": {
+   "x": 912,
+   "y": 145,
+   "w": 65,
+   "h": 101
+  },
+  "pharmacy": {
+   "x": 0,
+   "y": 276,
+   "w": 65,
+   "h": 97
+  },
+  "cornerstore": {
+   "x": 66,
+   "y": 276,
+   "w": 76,
+   "h": 51
+  },
+  "garage": {
+   "x": 143,
+   "y": 276,
+   "w": 68,
+   "h": 47
+  },
+  "kiosk": {
+   "x": 212,
+   "y": 276,
+   "w": 52,
+   "h": 46
+  },
+  "house": {
+   "x": 265,
+   "y": 276,
+   "w": 77,
+   "h": 54
+  },
+  "brick": {
+   "x": 343,
+   "y": 276,
+   "w": 70,
+   "h": 95
+  },
+  "watertower": {
+   "x": 414,
+   "y": 276,
+   "w": 43,
+   "h": 85
+  },
+  "lamp.0": {
+   "x": 458,
+   "y": 276,
+   "w": 42,
+   "h": 98
+  },
+  "lamp.1": {
+   "x": 501,
+   "y": 276,
+   "w": 42,
+   "h": 95
+  },
+  "busstop": {
+   "x": 544,
+   "y": 276,
+   "w": 19,
+   "h": 54
+  },
+  "pole": {
+   "x": 564,
+   "y": 276,
+   "w": 106,
+   "h": 95
+  },
+  "fence.0": {
+   "x": 671,
+   "y": 276,
+   "w": 38,
+   "h": 43
+  },
+  "fence.1": {
+   "x": 710,
+   "y": 276,
+   "w": 33,
+   "h": 43
+  },
+  "wall": {
+   "x": 744,
+   "y": 276,
+   "w": 57,
+   "h": 43
+  },
+  "planter": {
+   "x": 802,
+   "y": 276,
+   "w": 31,
+   "h": 40
+  },
+  "bin": {
+   "x": 834,
+   "y": 276,
+   "w": 22,
+   "h": 30
+  },
+  "bench": {
+   "x": 857,
+   "y": 276,
+   "w": 48,
+   "h": 26
+  },
+  "cloud.0": {
+   "x": 906,
+   "y": 276,
+   "w": 107,
+   "h": 32
+  },
+  "cloud.1": {
+   "x": 0,
+   "y": 375,
+   "w": 72,
+   "h": 31
+  },
+  "moon": {
+   "x": 73,
+   "y": 375,
+   "w": 46,
+   "h": 46
+  },
+  "cloud.2": {
+   "x": 120,
+   "y": 375,
+   "w": 96,
+   "h": 28
+  },
+  "cloud.3": {
+   "x": 217,
+   "y": 375,
+   "w": 69,
+   "h": 28
+  },
+  "bat.0": {
+   "x": 287,
+   "y": 375,
+   "w": 15,
+   "h": 14
+  },
+  "bat.1": {
+   "x": 303,
+   "y": 375,
+   "w": 22,
+   "h": 8
+  },
+  "bat.2": {
+   "x": 326,
+   "y": 375,
+   "w": 14,
+   "h": 14
+  },
+  "cloud.4": {
+   "x": 341,
+   "y": 375,
+   "w": 96,
+   "h": 27
+  },
+  "cloud.5": {
+   "x": 438,
+   "y": 375,
+   "w": 49,
+   "h": 23
+  },
+  "tile.0": {
+   "x": 488,
+   "y": 375,
+   "w": 52,
+   "h": 27
+  },
+  "tile.1": {
+   "x": 541,
+   "y": 375,
+   "w": 54,
+   "h": 27
+  },
+  "tile.2": {
+   "x": 596,
+   "y": 375,
+   "w": 55,
+   "h": 27
+  },
+  "tile.3": {
+   "x": 652,
+   "y": 375,
+   "w": 55,
+   "h": 27
+  },
+  "tile.4": {
+   "x": 708,
+   "y": 375,
+   "w": 54,
+   "h": 27
+  },
+  "tile.5": {
+   "x": 763,
+   "y": 375,
+   "w": 52,
+   "h": 27
+  },
+  "tile.6": {
+   "x": 816,
+   "y": 375,
+   "w": 52,
+   "h": 44
+  },
+  "tile.7": {
+   "x": 869,
+   "y": 375,
+   "w": 54,
+   "h": 44
+  },
+  "tile.8": {
+   "x": 924,
+   "y": 375,
+   "w": 55,
+   "h": 44
+  },
+  "tile.9": {
+   "x": 0,
+   "y": 422,
+   "w": 55,
+   "h": 44
+  },
+  "tile.10": {
+   "x": 56,
+   "y": 422,
+   "w": 54,
+   "h": 44
+  },
+  "tile.11": {
+   "x": 111,
+   "y": 422,
+   "w": 52,
+   "h": 44
+  }
+ }
+};
+
+return { default: __default };
+})();
+__mod["assets/bg/theme4.js"] = (function () {
+// Généré par tools/slice_bg.py — ne pas éditer à la main.
+const __default = {
+ "sheet": "bg/theme4.png",
+ "frames": {
+  "sky.0": {
+   "x": 0,
+   "y": 0,
+   "w": 611,
+   "h": 92
+  },
+  "sky.1": {
+   "x": 0,
+   "y": 93,
+   "w": 611,
+   "h": 88
+  },
+  "sky.2": {
+   "x": 0,
+   "y": 182,
+   "w": 611,
+   "h": 87
+  },
+  "frame": {
+   "x": 612,
+   "y": 182,
+   "w": 67,
+   "h": 129
+  },
+  "scaffold": {
+   "x": 680,
+   "y": 182,
+   "w": 74,
+   "h": 92
+  },
+  "factory": {
+   "x": 755,
+   "y": 182,
+   "w": 76,
+   "h": 82
+  },
+  "warehouse": {
+   "x": 832,
+   "y": 182,
+   "w": 79,
+   "h": 80
+  },
+  "cranetower": {
+   "x": 912,
+   "y": 182,
+   "w": 67,
+   "h": 112
+  },
+  "office": {
+   "x": 0,
+   "y": 312,
+   "w": 64,
+   "h": 59
+  },
+  "cabin": {
+   "x": 65,
+   "y": 312,
+   "w": 61,
+   "h": 35
+  },
+  "containers": {
+   "x": 127,
+   "y": 312,
+   "w": 79,
+   "h": 70
+  },
+  "workshop": {
+   "x": 207,
+   "y": 312,
+   "w": 81,
+   "h": 55
+  },
+  "silo": {
+   "x": 289,
+   "y": 312,
+   "w": 41,
+   "h": 95
+  },
+  "chimney": {
+   "x": 331,
+   "y": 312,
+   "w": 40,
+   "h": 113
+  },
+  "hoarding": {
+   "x": 372,
+   "y": 312,
+   "w": 82,
+   "h": 33
+  }
+ }
+};
+
+return { default: __default };
+})();
+__mod["assets/bg/theme5.js"] = (function () {
+// Généré par tools/slice_bg.py — ne pas éditer à la main.
+const __default = {
+ "sheet": "bg/theme5.png",
+ "frames": {
+  "sky.0": {
+   "x": 0,
+   "y": 0,
+   "w": 781,
+   "h": 107
+  },
+  "sky.1": {
+   "x": 0,
+   "y": 108,
+   "w": 781,
+   "h": 92
+  },
+  "sky.2": {
+   "x": 0,
+   "y": 201,
+   "w": 781,
+   "h": 92
+  },
+  "arcade": {
+   "x": 782,
+   "y": 201,
+   "w": 82,
+   "h": 101
+  },
+  "ramen": {
+   "x": 865,
+   "y": 201,
+   "w": 80,
+   "h": 65
+  },
+  "conbini": {
+   "x": 0,
+   "y": 303,
+   "w": 88,
+   "h": 58
+  },
+  "billboard": {
+   "x": 89,
+   "y": 303,
+   "w": 55,
+   "h": 124
+  },
+  "tech": {
+   "x": 145,
+   "y": 303,
+   "w": 66,
+   "h": 79
+  },
+  "tower": {
+   "x": 212,
+   "y": 303,
+   "w": 53,
+   "h": 116
+  },
+  "karaoke": {
+   "x": 266,
+   "y": 303,
+   "w": 89,
+   "h": 67
+  },
+  "noodle": {
+   "x": 356,
+   "y": 303,
+   "w": 59,
+   "h": 66
+  },
+  "garage": {
+   "x": 416,
+   "y": 303,
+   "w": 88,
+   "h": 95
+  },
+  "machine": {
+   "x": 505,
+   "y": 303,
+   "w": 58,
+   "h": 99
+  },
+  "vending": {
+   "x": 564,
+   "y": 303,
+   "w": 70,
+   "h": 60
+  },
+  "izakaya": {
+   "x": 635,
+   "y": 303,
+   "w": 69,
+   "h": 57
+  }
+ }
+};
+
+return { default: __default };
+})();
+__mod["src/render/decor.js"] = (function () {
+// Décor en sprites (fonds générés, atlas assets/bg/<thème>.png) pour la parallaxe.
+//
+// Remplace, pour les ambiances qui ont leur atlas, la skyline et les immeubles dessinés
+// en rectangles par parallax.js. Les autres ambiances gardent le rendu procédural.
+//
+// Quatre couches, de la plus lointaine à la plus proche :
+//   skyline  (0.12) : bandes qui se répètent en miroir (jamais de raccord visible)
+//   ciel     (0.03) : lune fixe, nuages qui dérivent lentement
+//   façades  (0.45) : immeubles posés à la suite, ordre pseudo-aléatoire stable
+//   mobilier (0.70) : lampadaires, clôtures, bancs… clairsemés devant les façades
+//
+// Tout est déterministe (aucun Math.random) : une même position de défilement donne
+// toujours la même image.
+
+const BG_THEME1 = __mod["assets/bg/theme1.js"].default;
+const BG_THEME4 = __mod["assets/bg/theme4.js"].default;
+const BG_THEME5 = __mod["assets/bg/theme5.js"].default;
+
+const BASE = 'assets/';
+const FACTEUR = { skyline: 0.12, ciel: 0.03, facade: 0.45, mobilier: 0.70 };
+
+// Ambiance (theme.id) → atlas, et composition des couches.
+const AMBIANCES = {
+  skatepark: {
+    atlas: BG_THEME1,
+    skyline: ['sky.0', 'sky.1', 'sky.2'],
+    // Un nom répété = deux fois plus de chances : les immeubles hauts dominent, les petits
+    // commerces (kiosque, garage, maison) ponctuent.
+    facades: ['cafe', 'cafe', 'skateshop', 'skateshop', 'market', 'arcade', 'arcade', 'laundry', 'laundry',
+      'pharmacy', 'pharmacy', 'brick', 'brick', 'cornerstore', 'garage', 'kiosk', 'house'],
+    mobilier: ['lamp.0', 'fence.0', 'lamp.1', 'bench', 'busstop', 'fence.1', 'bin', 'pole', 'wall',
+      'planter', 'lamp.1', 'lamp.0', 'watertower'],
+    lumineux: ['lamp.0', 'lamp.1'],
+    lune: 'moon',
+    nuages: ['cloud.0', 'cloud.1', 'cloud.2', 'cloud.3', 'cloud.4', 'cloud.5'],
+  },
+  // Planches B (mobilier, lune, nuages) à régénérer pour ces deux ambiances : couches vides.
+  chantier: {
+    atlas: BG_THEME4,
+    skyline: ['sky.0', 'sky.1', 'sky.2'],
+    facades: ['frame', 'frame', 'scaffold', 'scaffold', 'factory', 'factory', 'warehouse', 'warehouse',
+      'cranetower', 'cranetower', 'office', 'cabin', 'containers', 'containers', 'workshop', 'silo',
+      'chimney', 'hoarding'],
+    mobilier: [], lumineux: [], lune: null, nuages: [],
+  },
+  cyber: {
+    atlas: BG_THEME5,
+    skyline: ['sky.0', 'sky.1', 'sky.2'],
+    facades: ['arcade', 'arcade', 'ramen', 'conbini', 'conbini', 'billboard', 'billboard', 'tech',
+      'tower', 'tower', 'karaoke', 'karaoke', 'noodle', 'garage', 'machine', 'vending', 'izakaya'],
+    mobilier: [], lumineux: [], lune: null, nuages: [],
+  },
+};
+
+/** Suite pseudo-aléatoire stable : même indice → même valeur dans [0, 1). */
+function bruit(i, graine = 0) {
+  const x = Math.sin((i + graine) * 127.1 + 311.7) * 43758.5453;
+  return x - Math.floor(x);
+}
+
+function createDecorRenderer() {
+  const images = new Map(); // atlas → HTMLImageElement
+  const compo = new Map();  // theme.id → composition calculée une fois
+
+  function image(atlas) {
+    let img = images.get(atlas);
+    if (!img) {
+      img = new Image();
+      img.src = BASE + atlas.sheet;
+      images.set(atlas, img);
+    }
+    return img.complete && img.naturalWidth > 0 ? img : null;
+  }
+
+  /** Place les immeubles à la suite : ordre et écarts stables, période = longueur totale. */
+  function composer(def) {
+    const { frames } = def.atlas;
+    const facades = [];
+    let x = 0;
+    for (let i = 0; i < 48; i++) {
+      const nom = def.facades[Math.floor(bruit(i, 3) * def.facades.length)];
+      const f = frames[nom];
+      facades.push({ nom, f, x });
+      x += f.w + 4 + Math.floor(bruit(i, 9) * 26);
+    }
+    const mobilier = [];
+    let mx = 0;
+    for (let i = 0; def.mobilier.length > 0 && i < 40; i++) {
+      const nom = def.mobilier[Math.floor(bruit(i, 17) * def.mobilier.length)];
+      const f = frames[nom];
+      mobilier.push({ nom, f, x: mx });
+      mx += f.w + 90 + Math.floor(bruit(i, 23) * 160);
+    }
+    return { facades, longueurFacades: x, mobilier, longueurMobilier: mx };
+  }
+
+  function pour(theme) {
+    const def = AMBIANCES[theme.id];
+    if (!def) return null;
+    let c = compo.get(theme.id);
+    if (!c) {
+      c = composer(def);
+      compo.set(theme.id, c);
+    }
+    return { def, c };
+  }
+
+  /** Dessine une frame de l'atlas, ancrée par son bord bas (sy) et son bord « avant » (sx). */
+  function dessiner(ctx, img, f, sx, sy, direction, alpha = 1) {
+    if (alpha !== 1) ctx.globalAlpha = alpha;
+    if (direction < 0) {
+      ctx.save();
+      ctx.translate(Math.round(sx), 0);
+      ctx.scale(-1, 1);
+      ctx.drawImage(img, f.x, f.y, f.w, f.h, 0, Math.round(sy - f.h), f.w, f.h);
+      ctx.restore();
+    } else {
+      ctx.drawImage(img, f.x, f.y, f.w, f.h, Math.round(sx), Math.round(sy - f.h), f.w, f.h);
+    }
+    if (alpha !== 1) ctx.globalAlpha = 1;
+  }
+
+  function dessinerSkyline(ctx, view, img, def, solY, scroll, direction) {
+    const { frames } = def.atlas;
+    const bandes = def.skyline.map((n) => frames[n]);
+    const lw = bandes[0].w;
+    const s = scroll * FACTEUR.skyline;
+    // Bandes numérotées k ; les impaires sont retournées → bords toujours raccordés.
+    const k0 = Math.floor((s - view.w) / lw);
+    const k1 = Math.ceil((s + view.w * 2) / lw);
+    for (let k = k0; k <= k1; k++) {
+      const f = bandes[((Math.floor(k / 2) % bandes.length) + bandes.length) % bandes.length];
+      const sx = view.w * 0.3 + direction * (k * lw - s);
+      const gauche = direction > 0 ? sx : sx - lw;
+      if (gauche > view.w || gauche + lw < 0) continue;
+      const miroir = (((k % 2) + 2) % 2 === 1) !== (direction < 0);
+      ctx.save();
+      if (miroir) {
+        ctx.translate(Math.round(gauche) + lw, 0);
+        ctx.scale(-1, 1);
+        ctx.drawImage(img, f.x, f.y, f.w, f.h, 0, solY - f.h, f.w, f.h);
+      } else {
+        ctx.drawImage(img, f.x, f.y, f.w, f.h, Math.round(gauche), solY - f.h, f.w, f.h);
+      }
+      ctx.restore();
+    }
+  }
+
+  function dessinerCiel(ctx, view, img, def, scroll, direction) {
+    const { frames } = def.atlas;
+    const lune = def.lune && frames[def.lune];
+    if (lune) ctx.drawImage(img, lune.x, lune.y, lune.w, lune.h, Math.round(view.w * 0.76), 22, lune.w, lune.h);
+    const dérive = scroll * FACTEUR.ciel * direction;
+    const periode = view.w + 140;
+    def.nuages.forEach((nom, i) => {
+      const f = frames[nom];
+      const base = (i * 97 + bruit(i, 5) * 160) % periode;
+      const x = (((base - dérive) % periode) + periode) % periode - 70;
+      const y = 14 + Math.floor(bruit(i, 11) * 70);
+      ctx.globalAlpha = 0.85;
+      ctx.drawImage(img, f.x, f.y, f.w, f.h, Math.round(x), y, f.w, f.h);
+    });
+    ctx.globalAlpha = 1;
+  }
+
+  /** Dessine une couche d'objets posés au sol, sur [scroll-…, scroll+…] avec bouclage de période. */
+  function dessinerCouche(ctx, view, img, def, liste, longueur, solY, scroll, direction, facteur, lumineux) {
+    const s = scroll * facteur;
+    const cycle0 = Math.floor((s - view.w) / longueur);
+    const cycle1 = Math.ceil((s + view.w * 2) / longueur);
+    for (let cycle = cycle0; cycle <= cycle1; cycle++) {
+      for (const o of liste) {
+        const mondeX = cycle * longueur + o.x;
+        const sx = view.w * 0.3 + direction * (mondeX - s);
+        const gauche = direction > 0 ? sx : sx - o.f.w;
+        if (gauche > view.w || gauche + o.f.w < 0) continue;
+        const alpha = lumineux && lumineux.includes(o.nom) ? 0.85 : 1;
+        dessiner(ctx, img, o.f, sx, solY, direction, alpha);
+      }
+    }
+  }
+
+  /** @returns {boolean} faux si l'ambiance n'a pas d'atlas (ou s'il n'est pas encore chargé) */
+  function render(ctx, view, theme, solY, scroll, direction) {
+    const p = pour(theme);
+    if (!p) return false;
+    const img = image(p.def.atlas);
+    if (!img) return false;
+    const { def, c } = p;
+    dessinerSkyline(ctx, view, img, def, solY, scroll, direction);
+    dessinerCiel(ctx, view, img, def, scroll, direction);
+    dessinerCouche(ctx, view, img, def, c.facades, c.longueurFacades, solY, scroll, direction, FACTEUR.facade);
+    if (c.mobilier.length > 0) {
+      dessinerCouche(ctx, view, img, def, c.mobilier, c.longueurMobilier, solY, scroll, direction, FACTEUR.mobilier, def.lumineux);
+    }
+    return true;
+  }
+
+  return { render };
+}
+
+return { createDecorRenderer };
 })();
 __mod["src/render/parallax.js"] = (function () {
 // Rendu du décor et de la parallaxe 3 couches (§9, §14).
@@ -4712,11 +5929,16 @@ __mod["src/render/parallax.js"] = (function () {
 
 const { drawFrame, flipPourDirection } = __mod["src/render/sprite.js"];
 const { frame: frameInfo } = __mod["src/core/assets.js"];
+const { createDecorRenderer } = __mod["src/render/decor.js"];
+const { createObstacleRenderer } = __mod["src/render/obstacle-sprites.js"];
 
 const LARGEUR_BATIMENT_SKYLINE = 36;
 const ESPACEMENT_BATIMENT_MOYEN = 80;
 
 function createParallaxRenderer() {
+  const decor = createDecorRenderer();
+  const obstacles = createObstacleRenderer();
+
   // 1. Étoiles fixes déterministes
   const etoiles = [];
   for (let i = 0; i < 50; i++) {
@@ -5074,15 +6296,21 @@ function createParallaxRenderer() {
     for (const gap of entitesGaps) {
       const gapX = Math.round(view.w * 0.3 + direction * (gap.worldX - scroll));
       const w = gap.hitbox.w || 60;
-      ctx.fillStyle = '#06070a';
-      ctx.fillRect(Math.round(gapX - w / 2), solY, w, view.h - solY);
+      const g0 = Math.round(gapX - w / 2);
+      if (!obstacles.dessinerTrou(ctx, view, solY, g0, g0 + w, direction)) {
+        ctx.fillStyle = '#06070a';
+        ctx.fillRect(g0, solY, w, view.h - solY);
+      }
     }
   }
 
   function render(ctx, view, theme, solY, scroll, direction, entitesGaps = []) {
     dessinerCiel(ctx, view, theme, scroll, direction);
-    dessinerSkylineLointaine(ctx, view, theme, solY, scroll, direction);
-    dessinerCoucheMoyenne(ctx, view, theme, solY, scroll, direction);
+    // Ambiances avec atlas de décors : sprites ; sinon rendu procédural d'origine.
+    if (!decor.render(ctx, view, theme, solY, scroll, direction)) {
+      dessinerSkylineLointaine(ctx, view, theme, solY, scroll, direction);
+      dessinerCoucheMoyenne(ctx, view, theme, solY, scroll, direction);
+    }
     dessinerSolEtPremierPlan(ctx, view, theme, solY, scroll, direction, entitesGaps);
   }
 
@@ -5800,6 +7028,78 @@ function getTheme(palier = 1) {
 
 return { THEMES, getTheme };
 })();
+__mod["src/game/saison.js"] = (function () {
+// Décor de saison : Halloween, du 27/10 au 04/11 (4 jours avant et après la fête), à l'heure de Paris.
+// Léger par construction : une teinte, quelques citrouilles et chauves-souris qui flottent. Rien ne touche
+// à la physique, aux sprites ni au HUD. `?theme=halloween` force le décor pour le prévisualiser,
+// `?theme=aucun` le coupe.
+
+const DEBUT_HALLOWEEN = '10-27';
+const FIN_HALLOWEEN = '11-04';
+
+/** Jour MM-JJ à Paris pour un instant donné. */
+function jourParis(date) {
+  const parts = new Intl.DateTimeFormat('fr-CA', {
+    timeZone: 'Europe/Paris', month: '2-digit', day: '2-digit',
+  }).format(date);
+  return parts; // « 10-27 »
+}
+
+/** Nom de la saison en cours ('halloween') ou null. `forcee` vient de l'adresse (?theme=…). */
+function saisonCourante(date = new Date(), forcee = null) {
+  if (forcee) return forcee === 'halloween' ? 'halloween' : null;
+  const jour = jourParis(date);
+  return jour >= DEBUT_HALLOWEEN && jour <= FIN_HALLOWEEN ? 'halloween' : null;
+}
+
+/** Valeur de ?theme=… dans l'adresse, sans planter hors navigateur (tests). */
+function themeForce() {
+  try {
+    return new URLSearchParams(globalThis.location.search).get('theme');
+  } catch (_) {
+    return null;
+  }
+}
+
+// Petite valeur pseudo-aléatoire stable : la position des décors ne demande aucune mémoire
+const frac = (x) => x - Math.floor(x);
+const bruit = (i) => frac(Math.sin(i * 127.1 + 311.7) * 43758.5453);
+
+const DECORS = ['🎃', '🦇', '🦇', '👻', '🎃', '🦇', '🕸️', '🎃'];
+
+/**
+ * Dessine le décor de saison par-dessus le ciel (à appeler juste après le parallax).
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {{w:number,h:number}} view
+ * @param {number} t temps en secondes (animation)
+ * @param {string|null} saison
+ */
+function dessinerSaison(ctx, view, t, saison) {
+  if (saison !== 'halloween') return;
+  ctx.save();
+  // Teinte : lueur orange en haut, violet profond en bas
+  const g = ctx.createLinearGradient(0, 0, 0, view.h);
+  g.addColorStop(0, 'rgba(255, 120, 20, 0.20)');
+  g.addColorStop(1, 'rgba(110, 20, 140, 0.16)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, view.w, view.h);
+  // Décors qui dérivent lentement, assez discrets pour ne jamais gêner la lecture des obstacles
+  const taille = Math.max(14, Math.round(view.h * 0.07));
+  ctx.globalAlpha = 0.32;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = `${taille}px sans-serif`;
+  for (let i = 0; i < DECORS.length; i++) {
+    const vitesse = 0.02 + bruit(i + 1) * 0.03;
+    const x = frac(bruit(i + 5) - t * vitesse) * (view.w + taille * 2) - taille;
+    const y = (0.08 + bruit(i + 9) * 0.38) * view.h + Math.sin(t * 1.3 + i * 2) * taille * 0.4;
+    ctx.fillText(DECORS[i], x, y);
+  }
+  ctx.restore();
+}
+
+return { jourParis, saisonCourante, themeForce, dessinerSaison };
+})();
 __mod["src/main.js"] = (function () {
 const { createLoop } = __mod["src/core/loop.js"];
 const { createInput, Action } = __mod["src/core/input.js"];
@@ -5815,11 +7115,14 @@ const { resoudre } = __mod["src/game/physics.js"];
 const { createScoring } = __mod["src/game/scoring.js"];
 const { createParticleSystem } = __mod["src/game/particles.js"];
 const { createCamera } = __mod["src/game/camera.js"];
+const { createJuice } = __mod["src/game/juice.js"];
+const { createObstacleRenderer } = __mod["src/render/obstacle-sprites.js"];
 const { createParallaxRenderer } = __mod["src/render/parallax.js"];
 const { createAudio } = __mod["src/core/audio.js"];
 const { createStorage } = __mod["src/core/storage.js"];
 const { dessinerCurb2D, dessinerRampe2D, dessinerCone2D } = __mod["src/render/obstacles.js"];
 const { THEMES, getTheme } = __mod["src/data/themes.js"];
+const { saisonCourante, themeForce, dessinerSaison } = __mod["src/game/saison.js"];
 const { Family, ENTITIES } = __mod["src/data/entities.js"];
 
 const { getRider, RIDERS } = __mod["src/data/riders.js"];
@@ -5842,6 +7145,8 @@ const player = createPlayer({ rider: 'skate', direction: 1 });
 const scoring = createScoring();
 const particles = createParticleSystem();
 const camera = createCamera();
+const juice = createJuice({ reduit: () => storage.settings.reducedFx });
+const obstacleSprites = createObstacleRenderer();
 const parallax = createParallaxRenderer();
 const audio = createAudio();
 const storage = createStorage();
@@ -5902,6 +7207,7 @@ function demarrerRun(seed = nouvelleSeed(), { obstacles = true, rider = 'skate',
   scoring.etat.meilleurCombo = 1;
   particles.reinitGrind();
   camera.reset();
+  juice.reset();
   audio.startMusic();
 
   player.stats = getRider(rider);
@@ -5959,6 +7265,8 @@ function enregistrerTrickReussi() {
 
   if (perfect) {
     camera.shake(3, 0.15);
+    juice.hitStop(0.03);
+    juice.gerbe(player.x, player.y, { n: 10, force: 110, dirX: -player.direction, gravite: 0.6 });
     for (let k = 0; k < 3; k++) particles.etincelle(player.x, player.y, player.direction);
   } else {
     particles.poussiere(player.x, player.y, player.direction);
@@ -5979,9 +7287,19 @@ function majCollisions(scrollAvant, scrollApres) {
       scoring.perdreCombo();
       particles.reinitGrind();
       camera.shake(8, 0.35); // §10 : shake d'impact
+      juice.hitStop(0.07);
+      juice.flash('#ffffff', 0.45);
+      juice.gerbe(player.x, player.y - 10, { n: 22, force: 170, couleurs: ['#ffffff', '#ff5c3a', '#ffc93c'] });
       audio.sfx.crash();
       vibrer([40, 30, 40]); // §11 : crash
       return;
+    }
+
+    if (resultat === 'corner') {
+      // Corner correction : on remonte les pieds sur le sommet, sans crash.
+      player.y = solY() - (entite.elevation || 0) - entite.hitbox.h;
+      player.vy = 0;
+      continue;
     }
 
     if (resultat === 'clear') {
@@ -5995,7 +7313,23 @@ function majCollisions(scrollAvant, scrollApres) {
     }
 
     if (resultat === 'ramp') {
-      player.bonusRampe = BONUS_RAMPE;
+      // Décollage auto une seule fois par rampe, seulement quand le rider est
+      // vraiment posé dessus (un survol aérien ne doit pas re-déclencher un saut).
+      //
+      // Le bonus n'est posé QUE dans ce cas, consommé dans la même frame par
+      // declencherSautRampe(). Le laisser traîner pour un rider déjà en l'air
+      // créait un bonus fantôme : appliqué en silence au prochain saut
+      // volontaire du joueur, parfois une ou deux secondes plus tard, sans
+      // rapport apparent avec la rampe — trajectoire surprise, atterrissage
+      // raté, crash (retour testeur du 17/08).
+      if (!entite.rampeDeclenchee && player.auSol) {
+        entite.rampeDeclenchee = true;
+        player.bonusRampe = BONUS_RAMPE;
+        player.declencherSautRampe();
+        scoring.enregistrerTrick('RAMPE !', 30, player.x, player.y - 22, { perfect: false });
+        audio.sfx.combo(2);
+        for (let k = 0; k < 3; k++) particles.etincelle(player.x, player.y, player.direction);
+      }
     }
 
     if (resultat === 'grind') {
@@ -6018,6 +7352,7 @@ function majCollisions(scrollAvant, scrollApres) {
       } else {
         scoring.ramasserCollectible(cx, cy);
         audio.sfx.coin();
+        juice.gerbe(cx, cy, { n: 5, force: 70, couleurs: ['#ffc93c', '#ffffff'], gravite: 0.4 });
 
         if (entite.chunkInstance) {
           entite.chunkInstance.coinsRamasses++;
@@ -6037,6 +7372,9 @@ function majCollisions(scrollAvant, scrollApres) {
 }
 
 function majJeu(dt) {
+  // Hit-stop : la simulation (et l'input) attendent, éclats et flash continuent.
+  if (juice.gele(dt)) { juice.update(dt); return; }
+
   input.update();
 
   run.tempsTotal += dt;
@@ -6068,6 +7406,8 @@ function majJeu(dt) {
     scoring.afficherBandeau(`⚡ NIVEAU ${palierCalcule} : ${themeNiveau.nom.toUpperCase()} ! +1 VIE 💚`, player.x, player.y - 45, '#2ed573');
     audio.sfx.cleanLine();
     camera.shake(5, 0.3);
+    juice.flash('#2ed573', 0.3);
+    juice.gerbe(player.x, player.y - 12, { n: 24, force: 150, couleurs: ['#2ed573', '#ffffff', '#4ed4c4'], gravite: 0.5 });
     for (let k = 0; k < 8; k++) particles.etincelle(player.x, player.y, player.direction);
   } else if (level) {
     player.niveauPalier = level.palier;
@@ -6122,7 +7462,8 @@ function majJeu(dt) {
 
   scoring.update(dt);
   particles.update(dt);
-  camera.update(dt);
+  juice.update(dt);
+  camera.update(dt, player.y);
 
   if (player.state === RiderState.CRASH) {
     if (player.crashTermine) {
@@ -6200,6 +7541,21 @@ function dessinerEntites(sol, scroll, theme) {
 
     if (entite.family === Family.GAP) {
       continue; // Les gaps sont gérés par le renderer de sol/parallaxe
+    }
+
+    // Sprites de l'atlas d'obstacles ; repli sur le rendu procédural tant qu'il n'est pas chargé.
+    if (entite.family !== Family.COLLECTIBLE || !entite.collected) {
+      if (obstacleSprites.dessiner(ctx, entite, x, sol, player.direction, run.tempsTotal)) {
+        if (DEBUG && entite.hitbox) {
+          const sommet = sol - (entite.elevation || 0) - entite.hitbox.h;
+          ctx.strokeStyle = 'rgba(255,92,58,0.8)';
+          ctx.lineWidth = 1;
+          ctx.strokeRect(x - entite.hitbox.w / 2 + 0.5, sommet + 0.5, entite.hitbox.w - 1, entite.hitbox.h - 1);
+        }
+        continue;
+      }
+    } else {
+      continue;
     }
 
     if (entite.family === Family.COLLECTIBLE) {
@@ -6311,6 +7667,9 @@ function dessinerHUD(theme) {
   }
 }
 
+// Décor de saison (Halloween du 27/10 au 04/11), décidé une fois au lancement
+const SAISON = saisonCourante(new Date(), themeForce());
+
 function dessinerJeu(alpha) {
   const y = player.prevY + (player.y - player.prevY) * alpha;
   const scroll = monde.prevDefilement + (monde.defilement - monde.prevDefilement) * alpha;
@@ -6319,8 +7678,8 @@ function dessinerJeu(alpha) {
   const cam = camera.getOffset(player.vitesse, player.direction);
 
   ctx.save();
-  // Application du screen shake sur le monde (le HUD reste stable)
-  ctx.translate(Math.round(cam.shakeX), Math.round(cam.shakeY));
+  // Application du screen shake et du suivi vertical sur le monde (le HUD reste stable)
+  ctx.translate(Math.round(cam.shakeX), Math.round(cam.shakeY + cam.suiviY));
 
   // Gaps actifs pour le trou dans le sol
   const { actives } = entitesActives(entites, 0, scroll, view.w);
@@ -6328,6 +7687,7 @@ function dessinerJeu(alpha) {
 
   // Parallaxe 3 couches (§14)
   parallax.render(ctx, view, theme, sol, scroll, player.direction, gaps);
+  dessinerSaison(ctx, view, performance.now() / 1000, SAISON);
 
   dessinerEntites(sol, scroll, theme);
 
@@ -6359,6 +7719,7 @@ function dessinerJeu(alpha) {
   }
 
   dessinerParticules();
+  juice.dessinerEclats(ctx);
   dessinerBandeaux();
 
   if (DEBUG) {
@@ -6369,6 +7730,7 @@ function dessinerJeu(alpha) {
 
   ctx.restore();
 
+  juice.dessinerFlash(ctx, view);
   dessinerHUD(theme);
 }
 
@@ -6472,6 +7834,7 @@ const jeu = createStateMachine(State.BOOT, {
     render: () => {
       const theme = getTheme(1);
       parallax.render(ctx, view, theme, solY(), monde.defilement, 1, []);
+      dessinerSaison(ctx, view, performance.now() / 1000, SAISON);
 
       // Voile sombre
       ctx.fillStyle = 'rgba(12, 14, 22, 0.82)';
