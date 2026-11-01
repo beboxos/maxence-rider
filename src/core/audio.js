@@ -3,6 +3,8 @@
 // 100 % génératif, zéro asset audio externe lourd, chargement instantané.
 // Musique chiptune / MIDI 8-bit entraînante et effets sonores percutants.
 
+import { createMusic } from './music.js';
+
 const STORAGE_KEY = 'maxence_mute';
 
 export function createAudio() {
@@ -11,9 +13,8 @@ export function createAudio() {
   let sfxGain = null;
   let musicGain = null;
   let muted = false;
-  let musicRunning = false;
-  let musicTimer = null;
-  let noteIndex = 0;
+  // Séquenceur de musique : un thème par ambiance (core/music.js, données générées par tools/compose_music.py).
+  const music = createMusic({ getCtx: () => ctx, getOut: () => musicGain, estMuet: () => muted });
 
   // Récupérer le réglage persistant
   try {
@@ -180,136 +181,22 @@ export function createAudio() {
     },
   };
 
-  // ─── Musique Chiptune MIDI / 8-Bit entraînante ──────────────────────────────
-  // Progression d'accords énergique style skate arcade (135 BPM)
-  const BPM = 135;
-  const STEP_TIME = (60 / BPM) / 4; // double croche (16th note)
-
-  // Séquence de notes : Mélodie (Hz), Basse (Hz), Drum (0: silence, 1: kick, 2: snare, 3: hat)
-  // Scale: Pentatonique mineure / Dorian (La, Do, Ré, Mi, Sol)
-  const A3 = 220, C4 = 261.63, D4 = 293.66, E4 = 329.63, G4 = 392, A4 = 440, B4 = 493.88, C5 = 523.25, D5 = 587.33, E5 = 659.25;
-  const A2 = 110, F2 = 87.31, C3 = 130.81, G2 = 98.00, D3 = 146.83, E2 = 82.41;
-
-  const PATTERN = [
-    // Mesure 1 (Am)
-    { mel: A4, bass: A2, drum: 1 },
-    { mel: 0,  bass: A2, drum: 3 },
-    { mel: C5, bass: A2, drum: 3 },
-    { mel: D5, bass: A2, drum: 2 },
-    { mel: E5, bass: A2, drum: 1 },
-    { mel: 0,  bass: A2, drum: 3 },
-    { mel: D5, bass: A2, drum: 3 },
-    { mel: C5, bass: A2, drum: 2 },
-    // Mesure 2 (F / Dm)
-    { mel: D5, bass: F2, drum: 1 },
-    { mel: 0,  bass: F2, drum: 3 },
-    { mel: C5, bass: F2, drum: 3 },
-    { mel: A4, bass: F2, drum: 2 },
-    { mel: G4, bass: D3, drum: 1 },
-    { mel: A4, bass: D3, drum: 3 },
-    { mel: C5, bass: D3, drum: 3 },
-    { mel: D5, bass: D3, drum: 2 },
-    // Mesure 3 (C)
-    { mel: E5, bass: C3, drum: 1 },
-    { mel: 0,  bass: C3, drum: 3 },
-    { mel: G4, bass: C3, drum: 3 },
-    { mel: C5, bass: C3, drum: 2 },
-    { mel: D5, bass: C3, drum: 1 },
-    { mel: E5, bass: C3, drum: 3 },
-    { mel: G4, bass: C3, drum: 3 },
-    { mel: C5, bass: C3, drum: 2 },
-    // Mesure 4 (G / Em turnaround)
-    { mel: D5, bass: G2, drum: 1 },
-    { mel: 0,  bass: G2, drum: 3 },
-    { mel: C5, bass: G2, drum: 3 },
-    { mel: B4 || 493.88, bass: G2, drum: 2 },
-    { mel: A4, bass: E2, drum: 1 },
-    { mel: G4, bass: E2, drum: 3 },
-    { mel: E4, bass: E2, drum: 3 },
-    { mel: G4, bass: E2, drum: 2 },
-  ];
-
-  function playStep() {
-    if (!musicRunning || muted || !ctx) return;
-    const step = PATTERN[noteIndex % PATTERN.length];
-    noteIndex++;
-    const t = ctx.currentTime;
-
-    // 1. Basse funky (Triangle / Sawtooth)
-    if (step.bass) {
-      try {
-        const osc = ctx.createOscillator();
-        const g = ctx.createGain();
-        osc.type = 'triangle';
-        osc.frequency.setValueAtTime(step.bass, t);
-        g.gain.setValueAtTime(0.28, t);
-        g.gain.exponentialRampToValueAtTime(0.01, t + STEP_TIME * 0.9);
-        osc.connect(g);
-        g.connect(musicGain);
-        osc.start(t);
-        osc.stop(t + STEP_TIME * 0.9);
-      } catch {}
-    }
-
-    // 2. Mélodie lead (Pulse / Square douce)
-    if (step.mel) {
-      try {
-        const osc = ctx.createOscillator();
-        const g = ctx.createGain();
-        osc.type = 'square';
-        osc.frequency.setValueAtTime(step.mel, t);
-        g.gain.setValueAtTime(0.12, t);
-        g.gain.exponentialRampToValueAtTime(0.005, t + STEP_TIME * 1.5);
-        osc.connect(g);
-        g.connect(musicGain);
-        osc.start(t);
-        osc.stop(t + STEP_TIME * 1.5);
-      } catch {}
-    }
-
-    // 3. Batterie 8-bit
-    if (step.drum === 1) {
-      // Kick
-      try {
-        const osc = ctx.createOscillator();
-        const g = ctx.createGain();
-        osc.frequency.setValueAtTime(140, t);
-        osc.frequency.exponentialRampToValueAtTime(30, t + 0.08);
-        g.gain.setValueAtTime(0.35, t);
-        g.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
-        osc.connect(g);
-        g.connect(musicGain);
-        osc.start(t);
-        osc.stop(t + 0.08);
-      } catch {}
-    } else if (step.drum === 2) {
-      // Snare
-      playNoise(0.07, 0.18, 1000);
-    } else if (step.drum === 3) {
-      // Hi-Hat
-      playNoise(0.02, 0.08, 4000);
-    }
-  }
-
+  // ─── Musique ───────────────────────────────────────────────────────────────
   function startMusic() {
     ensureResumed();
-    // Sans Web Audio (environnement sans AudioContext — le harnais de test,
-    // par exemple), ctx reste null et playStep() ne ferait jamais rien
-    // d'observable. Armer quand même le setInterval garderait le process Node
-    // vivant indéfiniment après la fin d'un script : plus aucun test ne
-    // pourrait se terminer tout seul une fois l'audio exercé une fois.
-    if (!ctx || musicRunning) return;
-    musicRunning = true;
-    noteIndex = 0;
-    musicTimer = setInterval(playStep, STEP_TIME * 1000);
+    // Sans Web Audio (environnement sans AudioContext — le harnais de test, par exemple), ctx reste
+    // null : le séquenceur ne s'arme pas, ce qui évite de garder le process Node vivant indéfiniment.
+    if (!ctx) return;
+    music.start();
   }
 
   function stopMusic() {
-    musicRunning = false;
-    if (musicTimer) {
-      clearInterval(musicTimer);
-      musicTimer = null;
-    }
+    music.stop();
+  }
+
+  /** Thème de l'ambiance (id de THEMES) : pris en compte à la prochaine mesure si la musique joue. */
+  function setMusicTheme(id) {
+    music.setTheme(id);
   }
 
   return {
@@ -321,5 +208,7 @@ export function createAudio() {
     sfx,
     startMusic,
     stopMusic,
+    setMusicTheme,
+    music,
   };
 }

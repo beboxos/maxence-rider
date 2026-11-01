@@ -105,6 +105,7 @@ function demarrerRun(seed = nouvelleSeed(), { obstacles = true, rider = 'skate',
   particles.reinitGrind();
   camera.reset();
   juice.reset();
+  audio.setMusicTheme?.(getTheme(1).id); // chaque ambiance a son thème (tools/compose_music.py) ; `?.` : modules en cache d'âges mixtes
   audio.startMusic();
 
   player.stats = getRider(rider);
@@ -300,6 +301,7 @@ function majJeu(dt) {
     player.niveauPalier = palierCalcule;
     run.vies = Math.min(5, run.vies + 1); // +1 vie gagnée tous les 10 000 points !
     const themeNiveau = getTheme(palierCalcule);
+    audio.setMusicTheme?.(themeNiveau.id); // bascule à la fin de la mesure en cours
     scoring.afficherBandeau(`⚡ NIVEAU ${palierCalcule} : ${themeNiveau.nom.toUpperCase()} ! +1 VIE 💚`, player.x, player.y - 45, '#2ed573');
     audio.sfx.cleanLine();
     camera.shake(5, 0.3);

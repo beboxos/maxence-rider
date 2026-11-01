@@ -8,6 +8,18 @@ Le brief complet du projet est dans [docs/BRIEF.md](docs/BRIEF.md).
 **Jouer en ligne (iPhone, Android, PC) : <https://beboxos.github.io/maxence-rider/>** — publié par GitHub Pages depuis la branche `main`
 (chaque `git push` met le site à jour). Sur iPhone : Partager → « Sur l'écran d'accueil » pour l'installer en plein écran, en paysage.
 
+## Musique
+
+Un thème par ambiance (Avenue, Quartier, Campus, Chantier, Cyber), composés par `tools/compose_music.py`
+(graine fixe, 16 mesures chacun) : le script écrit les `.mid` de `assets/music/` (à écouter ou retoucher dans
+n'importe quel éditeur MIDI) et `src/data/music.js`, que `src/core/music.js` joue avec le synthé Web Audio du
+jeu. Le thème change à la fin de la mesure quand on passe à l'ambiance suivante.
+
+```bash
+python tools/compose_music.py                 # régénère .mid + src/data/music.js
+python tools/compose_music.py --wav apercu/   # + un aperçu WAV de chaque thème
+```
+
 ## Lancer
 
 ```bash
