@@ -12,6 +12,7 @@ import { resoudre } from './game/physics.js';
 import { createScoring } from './game/scoring.js';
 import { createParticleSystem } from './game/particles.js';
 import { createCamera } from './game/camera.js';
+import { createJuice } from './game/juice.js';
 import { createParallaxRenderer } from './render/parallax.js';
 import { createAudio } from './core/audio.js';
 import { createStorage } from './core/storage.js';
@@ -40,6 +41,7 @@ const player = createPlayer({ rider: 'skate', direction: 1 });
 const scoring = createScoring();
 const particles = createParticleSystem();
 const camera = createCamera();
+const juice = createJuice({ reduit: () => storage.settings.reducedFx });
 const parallax = createParallaxRenderer();
 const audio = createAudio();
 const storage = createStorage();
@@ -100,6 +102,7 @@ function demarrerRun(seed = nouvelleSeed(), { obstacles = true, rider = 'skate',
   scoring.etat.meilleurCombo = 1;
   particles.reinitGrind();
   camera.reset();
+  juice.reset();
   audio.startMusic();
 
   player.stats = getRider(rider);
@@ -157,6 +160,8 @@ function enregistrerTrickReussi() {
 
   if (perfect) {
     camera.shake(3, 0.15);
+    juice.hitStop(0.03);
+    juice.gerbe(player.x, player.y, { n: 10, force: 110, dirX: -player.direction, gravite: 0.6 });
     for (let k = 0; k < 3; k++) particles.etincelle(player.x, player.y, player.direction);
   } else {
     particles.poussiere(player.x, player.y, player.direction);
@@ -177,6 +182,9 @@ function majCollisions(scrollAvant, scrollApres) {
       scoring.perdreCombo();
       particles.reinitGrind();
       camera.shake(8, 0.35); // §10 : shake d'impact
+      juice.hitStop(0.07);
+      juice.flash('#ffffff', 0.45);
+      juice.gerbe(player.x, player.y - 10, { n: 22, force: 170, couleurs: ['#ffffff', '#ff5c3a', '#ffc93c'] });
       audio.sfx.crash();
       vibrer([40, 30, 40]); // §11 : crash
       return;
@@ -232,6 +240,7 @@ function majCollisions(scrollAvant, scrollApres) {
       } else {
         scoring.ramasserCollectible(cx, cy);
         audio.sfx.coin();
+        juice.gerbe(cx, cy, { n: 5, force: 70, couleurs: ['#ffc93c', '#ffffff'], gravite: 0.4 });
 
         if (entite.chunkInstance) {
           entite.chunkInstance.coinsRamasses++;
@@ -251,6 +260,9 @@ function majCollisions(scrollAvant, scrollApres) {
 }
 
 function majJeu(dt) {
+  // Hit-stop : la simulation (et l'input) attendent, éclats et flash continuent.
+  if (juice.gele(dt)) { juice.update(dt); return; }
+
   input.update();
 
   run.tempsTotal += dt;
@@ -282,6 +294,8 @@ function majJeu(dt) {
     scoring.afficherBandeau(`⚡ NIVEAU ${palierCalcule} : ${themeNiveau.nom.toUpperCase()} ! +1 VIE 💚`, player.x, player.y - 45, '#2ed573');
     audio.sfx.cleanLine();
     camera.shake(5, 0.3);
+    juice.flash('#2ed573', 0.3);
+    juice.gerbe(player.x, player.y - 12, { n: 24, force: 150, couleurs: ['#2ed573', '#ffffff', '#4ed4c4'], gravite: 0.5 });
     for (let k = 0; k < 8; k++) particles.etincelle(player.x, player.y, player.direction);
   } else if (level) {
     player.niveauPalier = level.palier;
@@ -336,6 +350,7 @@ function majJeu(dt) {
 
   scoring.update(dt);
   particles.update(dt);
+  juice.update(dt);
   camera.update(dt, player.y);
 
   if (player.state === RiderState.CRASH) {
@@ -577,6 +592,7 @@ function dessinerJeu(alpha) {
   }
 
   dessinerParticules();
+  juice.dessinerEclats(ctx);
   dessinerBandeaux();
 
   if (DEBUG) {
@@ -587,6 +603,7 @@ function dessinerJeu(alpha) {
 
   ctx.restore();
 
+  juice.dessinerFlash(ctx, view);
   dessinerHUD(theme);
 }
 
