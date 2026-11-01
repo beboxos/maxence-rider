@@ -192,7 +192,23 @@ function majCollisions(scrollAvant, scrollApres) {
     }
 
     if (resultat === 'ramp') {
-      player.bonusRampe = BONUS_RAMPE;
+      // Décollage auto une seule fois par rampe, seulement quand le rider est
+      // vraiment posé dessus (un survol aérien ne doit pas re-déclencher un saut).
+      //
+      // Le bonus n'est posé QUE dans ce cas, consommé dans la même frame par
+      // declencherSautRampe(). Le laisser traîner pour un rider déjà en l'air
+      // créait un bonus fantôme : appliqué en silence au prochain saut
+      // volontaire du joueur, parfois une ou deux secondes plus tard, sans
+      // rapport apparent avec la rampe — trajectoire surprise, atterrissage
+      // raté, crash (retour testeur du 17/08).
+      if (!entite.rampeDeclenchee && player.auSol) {
+        entite.rampeDeclenchee = true;
+        player.bonusRampe = BONUS_RAMPE;
+        player.declencherSautRampe();
+        scoring.enregistrerTrick('RAMPE !', 30, player.x, player.y - 22, { perfect: false });
+        audio.sfx.combo(2);
+        for (let k = 0; k < 3; k++) particles.etincelle(player.x, player.y, player.direction);
+      }
     }
 
     if (resultat === 'grind') {
@@ -319,7 +335,7 @@ function majJeu(dt) {
 
   scoring.update(dt);
   particles.update(dt);
-  camera.update(dt);
+  camera.update(dt, player.y);
 
   if (player.state === RiderState.CRASH) {
     if (player.crashTermine) {
@@ -516,8 +532,8 @@ function dessinerJeu(alpha) {
   const cam = camera.getOffset(player.vitesse, player.direction);
 
   ctx.save();
-  // Application du screen shake sur le monde (le HUD reste stable)
-  ctx.translate(Math.round(cam.shakeX), Math.round(cam.shakeY));
+  // Application du screen shake et du suivi vertical sur le monde (le HUD reste stable)
+  ctx.translate(Math.round(cam.shakeX), Math.round(cam.shakeY + cam.suiviY));
 
   // Gaps actifs pour le trou dans le sol
   const { actives } = entitesActives(entites, 0, scroll, view.w);

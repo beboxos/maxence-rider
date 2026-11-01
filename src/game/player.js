@@ -459,5 +459,11 @@ export function createPlayer({ rider = 'skate', direction = 1 } = {}) {
     p.animSaut = 'ollie';
   };
 
+  /** Décollage automatique au contact d'une rampe (§6.5) : un ollie majoré par bonusRampe. */
+  p.declencherSautRampe = function declencherSautRampe() {
+    if (!p.auSol) return;
+    lancerSaut('ollie');
+  };
+
   return p;
 }

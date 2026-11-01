@@ -103,10 +103,17 @@ export function resoudre(entity, player, solY, scrollAvant, scrollApres) {
   const sommet = bas - entity.hitbox.h;
 
   // §6.4 : Détection du Grind sur rail / curb
-  // Condition : obstacle grindable, en l'air, vitesse descendante (vy >= 0),
-  // et les pieds franchissent la surface supérieure [sommet - TOLERANCE, sommet + TOLERANCE].
+  // Condition : obstacle grindable, en l'air *par rapport à cet obstacle*,
+  // vitesse descendante (vy >= 0), et les pieds franchissent la surface
+  // supérieure [sommet - TOLERANCE, sommet + TOLERANCE].
+  //
+  // On teste `player.prevY` contre `sommet` plutôt que `player.auSol` : pour un
+  // curb posé au ras du sol, majPhysique() a déjà reposé le rider sur le sol
+  // général (et remis auSol à true) avant que cette fonction ne s'exécute pour
+  // ce pas — auSol ment donc sur l'état réel vis-à-vis de CET obstacle précis.
   const estGrindable = entity.grindable || entity.family === Family.RAIL;
-  if (estGrindable && !player.auSol && (player.vy >= 0 || player.y >= player.prevY)) {
+  const etaitAuDessusDeLObstacle = player.prevY < sommet - TOLERANCE;
+  if (estGrindable && etaitAuDessusDeLObstacle && (player.vy >= 0 || player.y >= player.prevY)) {
     const toucheSommet = piedsMin <= sommet + TOLERANCE && piedsMax >= sommet - TOLERANCE;
     if (toucheSommet) {
       const ratio = chevauchementHorizontal(entity, player.x, scrollApres, player.direction);
