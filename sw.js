@@ -1,6 +1,6 @@
 // Service Worker pour Maxence Rider (mode 100% hors-ligne sur mobile)
 
-const CACHE_NAME = 'maxence-rider-v3';
+const CACHE_NAME = 'maxence-rider-v4';
 const ASSETS = [
   './',
   './index.html',
@@ -8,6 +8,8 @@ const ASSETS = [
   './dist/bundle.js',
   './assets/atlas.png',
   './assets/bg/theme1.png',
+  './assets/bg/theme2.png',
+  './assets/bg/theme3.png',
   './assets/bg/theme4.png',
   './assets/bg/theme5.png',
   './assets/bg/obstacles.png',

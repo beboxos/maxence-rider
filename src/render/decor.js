@@ -13,6 +13,8 @@
 // toujours la même image.
 
 import BG_THEME1 from '../../assets/bg/theme1.js';
+import BG_THEME2 from '../../assets/bg/theme2.js';
+import BG_THEME3 from '../../assets/bg/theme3.js';
 import BG_THEME4 from '../../assets/bg/theme4.js';
 import BG_THEME5 from '../../assets/bg/theme5.js';
 
@@ -33,6 +35,26 @@ const AMBIANCES = {
     lumineux: ['lamp.0', 'lamp.1'],
     lune: 'moon',
     nuages: ['cloud.0', 'cloud.1', 'cloud.2', 'cloud.3', 'cloud.4', 'cloud.5'],
+  },
+  maisons: {
+    atlas: BG_THEME2,
+    skyline: ['sky.0'],
+    facades: ['pair.0', 'pair.0', 'pair.1', 'pair.1', 'bakery', 'books', 'books'],
+    mobilier: ['lamp.0', 'tree.0', 'fence.0', 'mailbox.0', 'lamp.1', 'tree.1', 'fence.1', 'bin', 'laundry',
+      'mailbox.1', 'fence.2'],
+    lumineux: ['lamp.0', 'lamp.1'],
+    lune: 'sun',
+    nuages: ['cloud.0'],
+  },
+  ecole: {
+    atlas: BG_THEME3,
+    skyline: ['sky.0'],
+    facades: ['clocktower', 'library', 'library', 'dorm', 'dorm', 'hall', 'hall'],
+    mobilier: ['lamp.1', 'bench.0', 'banner.0', 'bikes.0', 'lamp.2', 'map', 'bin.0', 'banner.1', 'bench.1',
+      'sign', 'bikes.1', 'lamp.0', 'bin.1'],
+    lumineux: ['lamp.1', 'lamp.2'],
+    lune: 'moon',
+    nuages: ['cloud.0', 'cloud.1', 'lantern.1', 'lantern.3', 'lantern.0'],
   },
   // Planches B (mobilier, lune, nuages) à régénérer pour ces deux ambiances : couches vides.
   chantier: {

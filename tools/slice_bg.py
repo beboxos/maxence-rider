@@ -29,7 +29,7 @@ SEUIL_ALPHA = 0.5     # après réduction : un pixel est opaque au-delà de ce t
 # `classe` pilote l'échelle : sky = bandes de skyline, bld = bâtiments, prop = accessoires,
 # ciel = lune/nuages, vol = chauves-souris/oiseaux, sol = tuiles de sol.
 ECHELLES = {'sky': 0.40, 'bld': 0.22, 'prop': 0.20, 'ciel': 0.22, 'vol': 0.12, 'sol': 0.17}
-DOUX = {'lamp.0', 'lamp.1', 'heart.0', 'heart.1'}   # halos de lumière : alpha conservé sur 4 niveaux
+DOUX = {'lamp.0', 'lamp.1', 'lamp.2', 'heart.0', 'heart.1'}   # halos de lumière : alpha conservé sur 4 niveaux
 
 
 def sk(prefix, indices, cls='sky'):
@@ -60,6 +60,51 @@ THEMES = {
                   ('bat.0', 'vol'), ('bat.1', 'vol'), ('bat.2', 'vol'),
                   ('cloud.4', 'ciel'), ('cloud.5', 'ciel')])]
              + [{'n': 'tile.%d' % k, 'i': 20 + k, 'cls': 'sol'} for k in range(12)]},
+        ],
+    },
+    # Pâté de maisons. Planche unique : skylines (4 bandes recollées en une), maisons en paires,
+    # commerces, mobilier, soleil, nuage, fumée de cheminée, tuiles. Les indices ci-dessous viennent de `probe`.
+    'theme2': {
+        'palette': 48,
+        'planches': [
+            {'fichier': 'atlas/theme2/Gemini_Generated_Image_czi1dmczi1dmczi1.jpeg',
+             'objets': [
+                 {'n': 'sky.0', 'i': [0, 1, 2, 3], 'cls': 'sky', 'e': 0.30},
+                 {'n': 'pair.0', 'i': 4, 'cls': 'bld'}, {'n': 'pair.1', 'i': 5, 'cls': 'bld'},
+                 {'n': 'bakery', 'i': 6, 'cls': 'bld'}, {'n': 'books', 'i': 7, 'cls': 'bld'},
+                 {'n': 'lamp.0', 'i': [8, 18], 'cls': 'prop'}, {'n': 'lamp.1', 'i': [11, 21], 'cls': 'prop'},
+                 {'n': 'fence.0', 'i': [9, 19], 'cls': 'prop'}, {'n': 'fence.1', 'i': [10, 20], 'cls': 'prop'},
+                 {'n': 'fence.2', 'i': [16, 27], 'cls': 'prop'},
+                 {'n': 'bin', 'i': 22, 'cls': 'prop'},
+                 {'n': 'mailbox.0', 'i': [12, 23], 'cls': 'prop'}, {'n': 'mailbox.1', 'i': [14, 25], 'cls': 'prop'},
+                 {'n': 'tree.0', 'i': [15, 26], 'cls': 'prop'}, {'n': 'tree.1', 'i': [17, 28], 'cls': 'prop'},
+                 {'n': 'laundry', 'i': 29, 'cls': 'prop'},
+                 {'n': 'sun', 'i': 31, 'cls': 'ciel'}, {'n': 'cloud.0', 'i': 32, 'cls': 'ciel'},
+                 {'n': 'chimney', 'i': 33, 'cls': 'prop'},
+             ] + [{'n': 'tile.%d' % k, 'i': 36 + k, 'cls': 'sol'} for k in range(8)]},
+        ],
+    },
+    # Campus. Skyline d'un seul tenant, 4 grands bâtiments, mobilier, lune, nuages, lanternes volantes.
+    'theme3': {
+        'palette': 48,
+        'planches': [
+            {'fichier': 'atlas/theme3/Gemini_Generated_Image_y4r83ty4r83ty4r8.jpeg',
+             'objets': [
+                 {'n': 'sky.0', 'i': 0, 'cls': 'sky'},
+                 {'n': 'clocktower', 'i': 1, 'cls': 'bld'}, {'n': 'library', 'i': 2, 'cls': 'bld'},
+                 {'n': 'dorm', 'i': 3, 'cls': 'bld'}, {'n': 'hall', 'i': 4, 'cls': 'bld'},
+                 {'n': 'bikes.0', 'i': 5, 'cls': 'prop'}, {'n': 'bikes.1', 'i': 6, 'cls': 'prop'},
+                 {'n': 'map', 'i': 7, 'cls': 'prop'}, {'n': 'bin.0', 'i': 8, 'cls': 'prop'},
+                 {'n': 'banner.0', 'i': 9, 'cls': 'prop'}, {'n': 'banner.1', 'i': 10, 'cls': 'prop'},
+                 {'n': 'lamp.0', 'i': 11, 'cls': 'prop'}, {'n': 'lamp.1', 'i': 12, 'cls': 'prop'},
+                 {'n': 'bench.0', 'i': 13, 'cls': 'prop'}, {'n': 'lamp.2', 'i': 14, 'cls': 'prop'},
+                 {'n': 'bench.1', 'i': 15, 'cls': 'prop'}, {'n': 'bin.1', 'i': 16, 'cls': 'prop'},
+                 {'n': 'sign', 'i': 17, 'cls': 'prop'},
+                 {'n': 'moon', 'i': 18, 'cls': 'ciel'}, {'n': 'cloud.0', 'i': 19, 'cls': 'ciel'},
+                 {'n': 'cloud.1', 'i': 20, 'cls': 'ciel'},
+                 {'n': 'lantern.0', 'i': 21, 'cls': 'vol'}, {'n': 'lantern.1', 'i': 22, 'cls': 'vol'},
+                 {'n': 'lantern.2', 'i': 23, 'cls': 'vol'}, {'n': 'lantern.3', 'i': 24, 'cls': 'vol'},
+             ] + [{'n': 'tile.%d' % k, 'i': 25 + k, 'cls': 'sol'} for k in range(8)]},
         ],
     },
     # Chantier & lofts. Planche B inutilisable (restes de skyline/bâtiments fantômes) : à régénérer.
