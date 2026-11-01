@@ -114,6 +114,15 @@ de présentation). Il reste 3 tâches, toutes chaînées à la même étape :
 
 ## Notes techniques pour un futur rebuild
 
+- **24/10/2026 — build sans Gradle sous Windows** : `powershell -File tools\build_aab_windows.ps1`
+  (aapt2 proto → javac → d8 → bundletool → jarsigner, outils sur `E:\workspace\android-tools`).
+  Version, SDK et identifiant sont lus dans `android/app/build.gradle` ; sortie `dist/app-release.aab`.
+  Gradle ne démarrait pas sur ce PC (« Unable to establish loopback connection »). Le bundle produit passe
+  `bundletool validate`, cible l'API 36 et est signé avec la clé de `android/keystore/`.
+  Tests du jeu sous Windows : `node tools/test.mjs` (chemins corrigés en URL `file://`, 224 contrôles).
+- **24/10/2026 — version 1.0.4 (code 5)** : correctifs rampes/caméra du 17/08 + décor Halloween léger
+  (`src/game/saison.js`, du 27/10 au 04/11 à l'heure de Paris ; aperçu avec `?theme=halloween`).
+
 - Le volume `T7` (exFAT) recrée des fichiers `._*` AppleDouble à chaque
   copie de ressources par Gradle, ce qui fait planter
   `parseReleaseLocalResources`. Pour rebuilder : copier `android/` vers un
@@ -126,3 +135,18 @@ de présentation). Il reste 3 tâches, toutes chaînées à la même étape :
 - Le mot de passe de la clé de signature release n'est **pas** dans ce
   fichier ni dans le repo (voir `.gitignore`) — à récupérer là où tu l'as
   sauvegardé après la première génération.
+- **17/08/2026 — mise à jour API 36 (Android 16)** : Google Play exige de
+  cibler l'API 36 avant le 31/08/2026 sous peine de blocage des mises à
+  jour. `android/build.gradle` (AGP `8.2.0` → `9.3.1`) et
+  `android/app/build.gradle` (`compileSdk`/`targetSdk` `35` → `36`,
+  `versionCode` `1` → `2`, `versionName` `1.0.0` → `1.0.1`) mis à jour.
+  Platform 36 + build-tools 36.1.0 installés dans le SDK local via
+  `sdkmanager` (téléchargé depuis `dl.google.com`, le SDK n'avait ni
+  cmdline-tools ni platform 36 pré-installés).
+  AGP 9+ interdit la balise `<uses-sdk>` dans `AndroidManifest.xml` (doit
+  être piloté uniquement par `build.gradle`) — retirée, ainsi que
+  l'attribut `package=` redondant avec `namespace` (warning AGP).
+  `jarsigner -verify` sur un `.aab` récent affiche des avertissements
+  bénins « signed in JarFile but not in JarInputStream » sur les entrées
+  Kotlin — normal pour ce format de signature, pas un vrai problème tant
+  qu'aucune entrée n'est signalée non signée et que le résumé reste positif.
