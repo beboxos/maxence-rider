@@ -5,6 +5,9 @@ vanilla, zéro dépendance au runtime.
 
 Le brief complet du projet est dans [docs/BRIEF.md](docs/BRIEF.md).
 
+**Jouer en ligne (iPhone, Android, PC) : <https://beboxos.github.io/maxence-rider/>** — publié par GitHub Pages depuis la branche `main`
+(chaque `git push` met le site à jour). Sur iPhone : Partager → « Sur l'écran d'accueil » pour l'installer en plein écran, en paysage.
+
 ## Lancer
 
 ```bash
