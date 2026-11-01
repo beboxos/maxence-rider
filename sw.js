@@ -1,6 +1,6 @@
 // Service Worker pour Maxence Rider (mode 100% hors-ligne sur mobile)
 
-const CACHE_NAME = 'maxence-rider-v4';
+const CACHE_NAME = 'maxence-rider-v5';
 const ASSETS = [
   './',
   './index.html',
@@ -38,6 +38,6 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   event.respondWith(
-    caches.match(event.request).then((response) => response || fetch(event.request))
+    caches.match(event.request, { ignoreSearch: true }).then((response) => response || fetch(event.request))
   );
 });

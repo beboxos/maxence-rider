@@ -1,6 +1,7 @@
 // Généré par tools/slice_bg.py — ne pas éditer à la main.
 export default {
  "sheet": "bg/obstacles.png",
+ "v": "9cb66483",
  "frames": {
   "qp.0": {
    "x": 0,

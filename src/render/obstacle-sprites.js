@@ -32,7 +32,7 @@ const CROIX = ['heart.0', 'heart.1'];                   // type 'life_cross' : p
 export function createObstacleRenderer() {
   const { frames } = OBSTACLES;
   const img = new Image();
-  img.src = BASE + OBSTACLES.sheet;
+  img.src = BASE + OBSTACLES.sheet + (OBSTACLES.v ? `?v=${OBSTACLES.v}` : '');
   const pret = () => img.complete && img.naturalWidth > 0;
 
   /** Entier stable dérivé de la position monde : même entité → même variante à chaque frame. */

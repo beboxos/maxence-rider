@@ -1,6 +1,7 @@
 // Généré par tools/slice_bg.py — ne pas éditer à la main.
 export default {
  "sheet": "bg/theme1.png",
+ "v": "63c75f51",
  "frames": {
   "sky.0": {
    "x": 0,

@@ -10,6 +10,7 @@ connexes → réduction « box » (alpha prémultiplié) à l'échelle du jeu �
 palette → atlas unique. Outil de développement : Python 3 + Pillow + numpy + scipy
 (le jeu, lui, n'a aucune dépendance).
 """
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -82,6 +83,9 @@ THEMES = {
                  {'n': 'sun', 'i': 31, 'cls': 'ciel'}, {'n': 'cloud.0', 'i': 32, 'cls': 'ciel'},
                  {'n': 'chimney', 'i': 33, 'cls': 'prop'},
              ] + [{'n': 'tile.%d' % k, 'i': 36 + k, 'cls': 'sol'} for k in range(8)]},
+            # Bâtiments supplémentaires générés le 01/11 (16 façades isolées : maisons de ville, commerces, pavillons).
+            {'fichier': 'atlas/theme2/Gemini_Generated_Image_o1pu34o1pu34o1pu.jpeg',
+             'objets': [{'n': 'h.%d' % k, 'i': k, 'cls': 'bld', 'lum': 1.6} for k in range(16)]},
         ],
     },
     # Campus. Skyline d'un seul tenant, 4 grands bâtiments, mobilier, lune, nuages, lanternes volantes.
@@ -436,7 +440,10 @@ def cmd_build(nom):
             if sp.get('flip'):
                 rec = rec[:, ::-1].copy()
             e = sp['e'] if 'e' in sp else ECHELLES[sp['cls']]
-            sprites.append(reduire(rec, facteur=e, doux=sp['n'] in DOUX))
+            spr = reduire(rec, facteur=e, doux=sp['n'] in DOUX)
+            if 'lum' in sp:                        # éclaircit (ou assombrit) un sprite trop terne pour son plan
+                spr[..., :3] = np.clip(spr[..., :3].astype(np.float32) * sp['lum'], 0, 255).astype(np.uint8)
+            sprites.append(spr)
             noms.append(sp['n'])
     sprites = quantifier(sprites, cfg.get('palette', 48))
     LARG = 1024
@@ -458,9 +465,10 @@ def cmd_build(nom):
         frames[n] = {'x': px, 'y': py, 'w': w, 'h': h}
     OUT.mkdir(parents=True, exist_ok=True)
     Image.fromarray(atlas).save(OUT / f'{nom}.png', optimize=True)
+    version = hashlib.md5((OUT / f'{nom}.png').read_bytes()).hexdigest()[:8]   # anti-cache : ajoutée à l'URL de la texture
     (OUT / f'{nom}.js').write_text(
         '// Généré par tools/slice_bg.py — ne pas éditer à la main.\n'
-        f'export default {json.dumps({"sheet": f"bg/{nom}.png", "frames": frames}, indent=1)};\n',
+        f'export default {json.dumps({"sheet": f"bg/{nom}.png", "v": version, "frames": frames}, indent=1)};\n',
         encoding='utf-8')
     print(f'{nom}: {len(frames)} sprites, texture {LARG}x{haut}')
     for n, f in frames.items():

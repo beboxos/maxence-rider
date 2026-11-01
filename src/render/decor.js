@@ -39,7 +39,7 @@ const AMBIANCES = {
   maisons: {
     atlas: BG_THEME2,
     skyline: ['sky.0'],
-    facades: ['pair.0', 'pair.0', 'pair.1', 'pair.1', 'bakery', 'books', 'books'],
+    facades: ['pair.0', 'pair.1', 'bakery', 'books', ...Array.from({ length: 16 }, (_, i) => `h.${i}`)],
     mobilier: ['lamp.0', 'tree.0', 'fence.0', 'mailbox.0', 'lamp.1', 'tree.1', 'fence.1', 'bin', 'laundry',
       'mailbox.1', 'fence.2'],
     lumineux: ['lamp.0', 'lamp.1'],
@@ -94,7 +94,7 @@ export function createDecorRenderer() {
     let img = images.get(atlas);
     if (!img) {
       img = new Image();
-      img.src = BASE + atlas.sheet;
+      img.src = BASE + atlas.sheet + (atlas.v ? `?v=${atlas.v}` : '');
       images.set(atlas, img);
     }
     return img.complete && img.naturalWidth > 0 ? img : null;
